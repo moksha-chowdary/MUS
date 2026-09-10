@@ -16,18 +16,28 @@ import com.mus.android.ui.theme.MusColors
 import com.mus.android.ui.theme.Spacing
 
 /**
- * Bottom sheet for adding a track to an existing playlist or creating a new one.
+ * Bottom sheet for adding/moving a track to an existing playlist or creating a new one.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AddToPlaylistSheet(
     playlists: List<Playlist>,
+    title: String = "Add to Playlist",
+    excludePlaylistId: Long? = null,
+    alreadyInPlaylistIds: Set<Long> = emptySet(),
     onPlaylistSelected: (Long) -> Unit,
-    onCreateNew: (String) -> Unit,
+    onCreateNew: ((String) -> Unit)? = null,
     onDismiss: () -> Unit,
 ) {
     var showCreateDialog by remember { mutableStateOf(false) }
     var newName by remember { mutableStateOf("") }
+    val displayPlaylists = remember(playlists, excludePlaylistId) {
+        if (excludePlaylistId != null) {
+            playlists.filter { it.id != excludePlaylistId }
+        } else {
+            playlists
+        }
+    }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -39,57 +49,84 @@ fun AddToPlaylistSheet(
                 .padding(bottom = Spacing.xl),
         ) {
             Text(
-                "Add to Playlist",
+                text = title,
                 style = MaterialTheme.typography.titleMedium,
                 color = MusColors.OnBackground,
                 modifier = Modifier.padding(horizontal = Spacing.base, vertical = Spacing.sm),
             )
 
             // Create new
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable { showCreateDialog = true }
-                    .padding(horizontal = Spacing.base, vertical = Spacing.md),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Icon(
-                    Icons.Rounded.Add,
-                    contentDescription = "Create",
-                    tint = MusColors.OnBackground,
-                    modifier = Modifier.size(24.dp),
-                )
-                Spacer(Modifier.width(Spacing.md))
-                Text(
-                    "Create new playlist",
-                    style = MaterialTheme.typography.titleSmall,
-                    color = MusColors.OnBackground,
-                )
-            }
-
-            // Existing playlists
-            playlists.forEach { playlist ->
+            if (onCreateNew != null) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clickable { onPlaylistSelected(playlist.id) }
+                        .clickable { showCreateDialog = true }
                         .padding(horizontal = Spacing.base, vertical = Spacing.md),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Icon(
-                        Icons.Rounded.QueueMusic,
-                        contentDescription = null,
-                        tint = MusColors.OnBackgroundSecondary,
+                        Icons.Rounded.Add,
+                        contentDescription = "Create",
+                        tint = MusColors.OnBackground,
                         modifier = Modifier.size(24.dp),
                     )
                     Spacer(Modifier.width(Spacing.md))
                     Text(
-                        playlist.name,
+                        "Create new playlist",
                         style = MaterialTheme.typography.titleSmall,
                         color = MusColors.OnBackground,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
                     )
+                }
+            }
+
+            // Existing playlists
+            if (displayPlaylists.isEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = Spacing.md, horizontal = Spacing.base),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        "No playlists available",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MusColors.OnBackgroundTertiary,
+                    )
+                }
+            } else {
+                displayPlaylists.forEach { playlist ->
+                    val isAlreadyIn = playlist.id in alreadyInPlaylistIds
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onPlaylistSelected(playlist.id) }
+                            .padding(horizontal = Spacing.base, vertical = Spacing.md),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            Icons.Rounded.QueueMusic,
+                            contentDescription = null,
+                            tint = if (isAlreadyIn) MusColors.OnBackgroundTertiary else MusColors.OnBackgroundSecondary,
+                            modifier = Modifier.size(24.dp),
+                        )
+                        Spacer(Modifier.width(Spacing.md))
+                        Text(
+                            text = playlist.name,
+                            style = MaterialTheme.typography.titleSmall,
+                            color = if (isAlreadyIn) MusColors.OnBackgroundSecondary else MusColors.OnBackground,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f),
+                        )
+                        if (isAlreadyIn) {
+                            Spacer(Modifier.width(Spacing.sm))
+                            Text(
+                                text = "✓ Added",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MusColors.OnBackgroundSecondary,
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -115,7 +152,7 @@ fun AddToPlaylistSheet(
             confirmButton = {
                 TextButton(onClick = {
                     if (newName.isNotBlank()) {
-                        onCreateNew(newName.trim())
+                        onCreateNew?.invoke(newName.trim())
                         newName = ""
                         showCreateDialog = false
                     }

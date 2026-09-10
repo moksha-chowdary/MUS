@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.mus.android.data.model.Track
 import com.mus.android.data.repository.MusicRepository
 import com.mus.android.playback.PlaybackManager
+import com.mus.android.playback.QueueContext
 import com.mus.android.ui.ambient.PaletteExtractor
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.*
@@ -24,6 +25,7 @@ class NowPlayingViewModel @Inject constructor(
     val duration: StateFlow<Long> = playbackManager.duration
     val queue: StateFlow<List<Track>> = playbackManager.queue
     val currentIndex: StateFlow<Int> = playbackManager.currentIndex
+    val queueContext: StateFlow<QueueContext> = playbackManager.queueContext
     val shuffleEnabled: StateFlow<Boolean> = playbackManager.shuffleEnabled
     val repeatMode: StateFlow<Int> = playbackManager.repeatMode
 
@@ -43,7 +45,7 @@ class NowPlayingViewModel @Inject constructor(
                 // Extract waveform
                 launch {
                     val waveform = repository.getWaveform(track.id, track.uri)
-                    _waveformData.value = waveform ?: List(200) { 0.5f }
+                    _waveformData.value = waveform ?: emptyList()
                 }
                 // Extract palette
                 launch {
@@ -70,6 +72,8 @@ class NowPlayingViewModel @Inject constructor(
 
     fun playQueueItem(index: Int) = playbackManager.playTrackAtIndex(index)
     fun removeFromQueue(index: Int) = playbackManager.removeFromQueue(index)
+    fun clearQueue() = playbackManager.clearQueue()
+    fun moveQueueItem(fromIndex: Int, toIndex: Int) = playbackManager.moveQueueItem(fromIndex, toIndex)
 
     fun playTrackWithQueue(track: Track, queue: List<Track>) {
         playbackManager.playTrack(track, queue)
@@ -78,18 +82,35 @@ class NowPlayingViewModel @Inject constructor(
     val playlists: StateFlow<List<com.mus.android.data.model.Playlist>> = repository.getAllPlaylists()
         .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
-    fun addTrackToPlaylist(playlistId: Long) {
-        val track = currentTrack.value ?: return
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    val existingPlaylistIdsForCurrentTrack: StateFlow<Set<Long>> = currentTrack
+        .flatMapLatest { track ->
+            if (track != null) {
+                repository.observePlaylistIdsForTrack(track.id).map { it.toSet() }
+            } else {
+                flowOf(emptySet())
+            }
+        }
+        .stateIn(viewModelScope, SharingStarted.Lazily, emptySet())
+
+    fun addTrackToPlaylist(playlistId: Long, onResult: (Boolean) -> Unit = {}) {
+        val track = currentTrack.value
+        if (track == null) {
+            onResult(false)
+            return
+        }
         viewModelScope.launch {
-            repository.addTrackToPlaylist(playlistId, track.id)
+            val added = repository.addTrackToPlaylist(playlistId, track.id)
+            onResult(added)
         }
     }
 
-    fun createPlaylistAndAddTrack(name: String) {
+    fun createPlaylistAndAddTrack(name: String, onDone: (Long) -> Unit = {}) {
         val track = currentTrack.value ?: return
         viewModelScope.launch {
             val id = repository.createPlaylist(name)
             repository.addTrackToPlaylist(id, track.id)
+            onDone(id)
         }
     }
 }

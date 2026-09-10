@@ -15,6 +15,7 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import com.mus.android.ui.ambient.AmbientGradientBackground
 import com.mus.android.ui.components.MiniPlayer
 import com.mus.android.ui.navigation.MusNavHost
 import com.mus.android.ui.navigation.MusRoute
@@ -31,8 +32,7 @@ fun MusApp(
     val navController = rememberNavController()
     val currentTrack by nowPlayingViewModel.currentTrack.collectAsState()
     val isPlaying by nowPlayingViewModel.isPlaying.collectAsState()
-    val position by nowPlayingViewModel.position.collectAsState()
-    val duration by nowPlayingViewModel.duration.collectAsState()
+    val artworkColors by nowPlayingViewModel.artworkColors.collectAsState()
 
     var showNowPlaying by remember { mutableStateOf(false) }
     var showQueue by remember { mutableStateOf(false) }
@@ -40,9 +40,14 @@ fun MusApp(
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = navBackStackEntry?.destination?.route
 
-    val progress = if (duration > 0) position.toFloat() / duration.toFloat() else 0f
+    Box(modifier = modifier.fillMaxSize().background(MusColors.Background)) {
+        // Global ambient background — subtle flowing colors derived from current artwork
+        AmbientGradientBackground(
+            colors = artworkColors,
+            intensity = 0.12f,
+            modifier = Modifier.fillMaxSize(),
+        )
 
-    Box(modifier = modifier.background(MusColors.Background)) {
         Column(modifier = Modifier.fillMaxSize()) {
             Box(modifier = Modifier.weight(1f)) {
                 MusNavHost(
@@ -53,7 +58,7 @@ fun MusApp(
                 )
             }
 
-            // Mini-player
+            // Mini-player (self-contained position observer)
             AnimatedVisibility(
                 visible = currentTrack != null && !showNowPlaying,
                 enter = slideInVertically { it } + fadeIn(),
@@ -63,7 +68,7 @@ fun MusApp(
                     MiniPlayer(
                         track = track,
                         isPlaying = isPlaying,
-                        progress = progress,
+                        viewModel = nowPlayingViewModel,
                         onTap = { showNowPlaying = true },
                         onPlayPause = { nowPlayingViewModel.togglePlayPause() },
                         onSkipNext = { nowPlayingViewModel.skipNext() },

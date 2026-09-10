@@ -11,47 +11,66 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
 import com.mus.android.ui.theme.MusColors
+import kotlin.math.sin
 
 /**
- * The MUS waveform slider.
+ * MUS waveform slider — progressive reveal paradigm.
  *
- * - Paused: single flat horizontal line (flatlined)
- * - Playing: waveform from real amplitude data
- * - Played portion: full opacity
- * - Unplayed portion: dimmed (~25-30% opacity)
- * - Transitions between states via morph animation
+ * FUNDAMENTAL RULE:
+ * - LEFT OF PLAYBACK POSITION: real audio waveform with organic peaks/valleys
+ * - RIGHT OF PLAYBACK POSITION: perfectly flat horizontal baseline
+ *
+ * At 0:00 → entire timeline is a flat line.
+ * As playback progresses → waveform is revealed from left to right.
+ * Seeking forward → extends revealed portion.
+ * Seeking backward → retracts revealed portion.
+ *
+ * The waveform shape is determined by real audio amplitude data.
+ * While playing, a subtle phase animation gives the wave a "living" feel.
+ * While paused, the wave freezes exactly where it is.
  */
 @Composable
 fun WaveformSlider(
-    waveformData: List<Float>, // normalized 0.0–1.0 amplitude peaks
-    progress: Float, // 0.0–1.0
+    waveformData: List<Float>, // normalized 0.0–1.0 amplitude peaks from real audio
+    progress: Float, // 0.0–1.0 playback position
     isPlaying: Boolean,
     onSeek: (Float) -> Unit,
     modifier: Modifier = Modifier,
-    playedColor: Color = MusColors.WaveformPlayed,
-    unplayedColor: Color = MusColors.WaveformUnplayed,
+    waveColor: Color = MusColors.WaveformPlayed,
+    baselineColor: Color = MusColors.WaveformUnplayed,
 ) {
-    // Morph: 0 = flatline, 1 = full waveform
-    val waveformVisibility by animateFloatAsState(
-        targetValue = if (isPlaying) 1f else 0f,
-        animationSpec = tween(
-            durationMillis = 600,
-            easing = CubicBezierEasing(0.22f, 1f, 0.36f, 1f)
+    // Subtle living animation phase — only advances while playing
+    val infiniteTransition = rememberInfiniteTransition(label = "wave_life")
+    val phaseRaw by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 360f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 4000, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart,
         ),
-        label = "waveform_morph"
+        label = "wave_phase",
     )
+
+    // Freeze phase when paused
+    var frozenPhase by remember { mutableFloatStateOf(0f) }
+    val currentPhase = if (isPlaying) {
+        frozenPhase = phaseRaw
+        phaseRaw
+    } else {
+        frozenPhase
+    }
 
     var isDragging by remember { mutableStateOf(false) }
     var dragProgress by remember { mutableFloatStateOf(0f) }
-
     val currentProgress = if (isDragging) dragProgress else progress
-    val effectiveData = remember(waveformData) {
-        if (waveformData.isEmpty()) List(200) { 0.5f } else waveformData
-    }
+
+    // Pre-process amplitude data
+    val hasWaveform = remember(waveformData) { waveformData.isNotEmpty() }
 
     Canvas(
         modifier = modifier
@@ -86,38 +105,94 @@ fun WaveformSlider(
         val w = size.width
         val h = size.height
         val centerY = h / 2f
-        val barCount = effectiveData.size
-        val totalBarWidth = w / barCount
-        val barWidth = (totalBarWidth * 0.6f).coerceIn(1f, 3.5f)
-        val maxBarHeight = h * 0.8f
+        val revealX = currentProgress * w
 
-        for (i in effectiveData.indices) {
-            val x = (i.toFloat() / barCount) * w + totalBarWidth / 2f
-            val amplitude = effectiveData[i]
-
-            // Morph between flat line (tiny height) and full waveform
-            val flatHeight = 2f // flat line thickness
-            val waveHeight = amplitude * maxBarHeight
-            val barHeight = flatHeight + (waveHeight - flatHeight) * waveformVisibility
-
-            val isPlayed = (x / w) <= currentProgress
-            val color = if (isPlayed) playedColor else unplayedColor
-
+        if (!hasWaveform) {
+            // No waveform data — just draw flat baseline across entire width
             drawLine(
-                color = color,
-                start = Offset(x, centerY - barHeight / 2),
-                end = Offset(x, centerY + barHeight / 2),
-                strokeWidth = barWidth,
+                color = baselineColor,
+                start = Offset(0f, centerY),
+                end = Offset(w, centerY),
+                strokeWidth = 2f,
                 cap = StrokeCap.Round,
             )
+        } else {
+            val sampleCount = waveformData.size
+            val phaseRadians = Math.toRadians(currentPhase.toDouble())
+            val maxAmplitude = h * 0.38f
+
+            // ── REVEALED WAVEFORM (left of playback position) ──
+            if (revealX > 1f) {
+                val topPath = Path()
+                val bottomPath = Path()
+
+                // Number of drawing points in the revealed section
+                val pointCount = ((revealX / w) * sampleCount).toInt().coerceIn(1, sampleCount)
+                val stepX = if (pointCount > 1) revealX / (pointCount - 1) else revealX
+
+                for (i in 0 until pointCount) {
+                    val x = i * stepX
+                    val sampleIdx = ((i.toFloat() / pointCount) * (sampleCount - 1)).toInt()
+                        .coerceIn(0, sampleCount - 1)
+                    val amplitude = waveformData[sampleIdx]
+
+                    // Subtle living oscillation while playing (varies per sample)
+                    val lifeOffset = if (isPlaying) {
+                        val freq = 2.0 + (sampleIdx % 3) * 0.5
+                        (sin(phaseRadians * freq + sampleIdx * 0.3) * 0.06f * amplitude).toFloat()
+                    } else 0f
+
+                    val waveHeight = amplitude * maxAmplitude + lifeOffset * maxAmplitude
+
+                    if (i == 0) {
+                        topPath.moveTo(x, centerY - waveHeight)
+                        bottomPath.moveTo(x, centerY + waveHeight)
+                    } else {
+                        topPath.lineTo(x, centerY - waveHeight)
+                        bottomPath.lineTo(x, centerY + waveHeight)
+                    }
+                }
+
+                // Draw top wave stroke
+                drawPath(
+                    path = topPath,
+                    color = waveColor,
+                    style = Stroke(
+                        width = 2.5f,
+                        cap = StrokeCap.Round,
+                        join = StrokeJoin.Round,
+                    ),
+                )
+
+                // Draw bottom wave stroke (mirror, slightly dimmer for depth)
+                drawPath(
+                    path = bottomPath,
+                    color = waveColor.copy(alpha = 0.6f),
+                    style = Stroke(
+                        width = 2f,
+                        cap = StrokeCap.Round,
+                        join = StrokeJoin.Round,
+                    ),
+                )
+            }
+
+            // ── FLAT FUTURE BASELINE (right of playback position) ──
+            if (revealX < w) {
+                drawLine(
+                    color = baselineColor,
+                    start = Offset(revealX, centerY),
+                    end = Offset(w, centerY),
+                    strokeWidth = 2f,
+                    cap = StrokeCap.Round,
+                )
+            }
         }
 
-        // Playhead indicator
-        val playheadX = currentProgress * w
+        // ── Playhead indicator ──
         drawCircle(
             color = MusColors.WaveformPlayhead,
             radius = 4.dp.toPx(),
-            center = Offset(playheadX, centerY),
+            center = Offset(revealX, centerY),
         )
     }
 }

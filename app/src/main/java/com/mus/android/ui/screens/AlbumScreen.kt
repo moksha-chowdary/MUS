@@ -6,9 +6,12 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
+import com.mus.android.ui.components.AnimatedListItem
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.rounded.Album
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Shuffle
 import androidx.compose.material3.*
@@ -20,6 +23,8 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import coil.compose.AsyncImage
+import com.mus.android.data.model.Track
+import com.mus.android.ui.components.SongMenuContainer
 import com.mus.android.ui.components.TrackRow
 import com.mus.android.ui.components.formatDuration
 import com.mus.android.ui.theme.MusColors
@@ -34,6 +39,7 @@ fun AlbumScreen(
 ) {
     val album by viewModel.album.collectAsState()
     val tracks by viewModel.tracks.collectAsState()
+    var selectedTrackForMenu by remember { mutableStateOf<Track?>(null) }
 
     LazyColumn(
         modifier = Modifier
@@ -66,14 +72,28 @@ fun AlbumScreen(
                     .padding(horizontal = Spacing.xl),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                AsyncImage(
-                    model = album?.artworkUri,
-                    contentDescription = album?.title,
-                    contentScale = ContentScale.Crop,
+                Box(
                     modifier = Modifier
                         .size(240.dp)
                         .clip(RoundedCornerShape(12.dp))
-                )
+                        .background(MusColors.SurfaceVariant),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Album,
+                        contentDescription = null,
+                        tint = MusColors.OnBackgroundTertiary,
+                        modifier = Modifier.size(80.dp)
+                    )
+                    if (!album?.artworkUri.isNullOrBlank()) {
+                        AsyncImage(
+                            model = album?.artworkUri,
+                            contentDescription = album?.title,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
+                }
                 Spacer(Modifier.height(Spacing.lg))
                 Text(
                     text = album?.title ?: "",
@@ -121,14 +141,22 @@ fun AlbumScreen(
         }
 
         // Track list
-        items(tracks) { track ->
-            TrackRow(
-                track = track,
-                onClick = { viewModel.playTrack(track) },
-                onFavoriteToggle = { viewModel.toggleFavorite(track.id) },
-                showArtwork = false,
-                trackNumber = track.trackNumber,
-            )
+        itemsIndexed(tracks, key = { _, track -> track.id }) { index, track ->
+            AnimatedListItem(index = index) {
+                TrackRow(
+                    track = track,
+                    onClick = { viewModel.playTrack(track) },
+                    onFavoriteToggle = { viewModel.toggleFavorite(track.id) },
+                    onMoreClick = { selectedTrackForMenu = track },
+                    showArtwork = false,
+                    trackNumber = track.trackNumber,
+                )
+            }
         }
     }
+
+    SongMenuContainer(
+        selectedTrack = selectedTrackForMenu,
+        onDismissMenu = { selectedTrackForMenu = null },
+    )
 }

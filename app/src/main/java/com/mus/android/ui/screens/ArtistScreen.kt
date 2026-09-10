@@ -19,7 +19,9 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import coil.compose.AsyncImage
+import com.mus.android.data.model.Track
 import com.mus.android.ui.components.AlbumCard
+import com.mus.android.ui.components.SongMenuContainer
 import com.mus.android.ui.components.TrackRow
 import com.mus.android.ui.theme.MusColors
 import com.mus.android.ui.theme.Spacing
@@ -34,6 +36,7 @@ fun ArtistScreen(
     val artist by viewModel.artist.collectAsState()
     val albums by viewModel.albums.collectAsState()
     val tracks by viewModel.tracks.collectAsState()
+    var selectedTrackForMenu by remember { mutableStateOf<Track?>(null) }
 
     LazyColumn(
         modifier = Modifier
@@ -155,7 +158,14 @@ fun ArtistScreen(
             TrackRow(
                 track = track,
                 onClick = { viewModel.playTrack(track) },
+                onMoreClick = { selectedTrackForMenu = track },
             )
         }
     }
+
+    SongMenuContainer(
+        selectedTrack = selectedTrackForMenu,
+        onDismissMenu = { selectedTrackForMenu = null },
+        onNavigateToAlbum = onAlbumClick,
+    )
 }

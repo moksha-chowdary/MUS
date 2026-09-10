@@ -19,6 +19,7 @@ object MusColors {
     val Divider = Color(0xFF2A2A2A)
 
     val Favorite = Color(0xFFE05555) // subtle red for favorite heart
+    val Error = Color(0xFFCF6679) // subtle red/pink for destructive actions and error states
 
     val Transparent = Color.Transparent
     val Black = Color.Black

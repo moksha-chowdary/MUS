@@ -13,10 +13,12 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Album
+import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.rounded.QueueMusic
 import androidx.compose.material3.*
+import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -26,8 +28,11 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import coil.compose.AsyncImage
+import com.mus.android.data.classifier.LanguageClassifier
+import com.mus.android.data.model.Playlist
 import com.mus.android.data.model.Track
 import com.mus.android.ui.components.AlbumCard
+import com.mus.android.ui.components.SongMenuContainer
 import com.mus.android.ui.components.TrackRow
 import com.mus.android.ui.theme.MusColors
 import com.mus.android.ui.theme.Spacing
@@ -54,6 +59,8 @@ fun LibraryScreen(
 
     var showCreateDialog by remember { mutableStateOf(false) }
     var newPlaylistName by remember { mutableStateOf("") }
+    var playlistToDelete by remember { mutableStateOf<Playlist?>(null) }
+    var selectedTrackForMenu by remember { mutableStateOf<Track?>(null) }
 
     Column(
         modifier = Modifier
@@ -108,12 +115,6 @@ fun LibraryScreen(
 
         when (selectedTab) {
             0 -> {
-                // Playlists
-                val defaultLanguagePlaylists = playlists.filter {
-                    it.name.startsWith("Hindi") || it.name.startsWith("English") || it.name.startsWith("Regional")
-                }
-                val customPlaylists = playlists.filter { it !in defaultLanguagePlaylists }
-
                 LazyColumn(
                     contentPadding = PaddingValues(bottom = 120.dp),
                 ) {
@@ -178,81 +179,9 @@ fun LibraryScreen(
                         }
                     }
 
-                    // Language Playlists Section Header
-                    if (defaultLanguagePlaylists.isNotEmpty()) {
-                        item {
-                            Spacer(Modifier.height(Spacing.sm))
-                            Text(
-                                "Language Playlists (Auto-Filtered)",
-                                style = MaterialTheme.typography.labelLarge,
-                                color = MusColors.OnBackgroundSecondary,
-                                modifier = Modifier.padding(horizontal = Spacing.base, vertical = Spacing.xs),
-                            )
-                        }
-
-                        items(defaultLanguagePlaylists) { playlist ->
-                            val subtitle = when {
-                                playlist.name.startsWith("Hindi") -> "Bollywood & Hindi tracks • Auto-updated"
-                                playlist.name.startsWith("English") -> "English & Western tracks • Auto-updated"
-                                else -> "Telugu, Tamil, Malayalam & More • Auto-updated"
-                            }
-                            val tagText = when {
-                                playlist.name.startsWith("Hindi") -> "HI"
-                                playlist.name.startsWith("English") -> "EN"
-                                else -> "REG"
-                            }
-
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clickable { onPlaylistClick(playlist.id) }
-                                    .padding(horizontal = Spacing.base, vertical = Spacing.md),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(48.dp)
-                                        .background(MusColors.SurfaceVariant, RoundedCornerShape(8.dp)),
-                                    contentAlignment = Alignment.Center,
-                                ) {
-                                    Text(
-                                        text = tagText,
-                                        style = MaterialTheme.typography.labelMedium,
-                                        color = MusColors.OnBackground,
-                                    )
-                                }
-                                Spacer(Modifier.width(Spacing.md))
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(
-                                        playlist.name,
-                                        style = MaterialTheme.typography.titleSmall,
-                                        color = MusColors.OnBackground,
-                                    )
-                                    Text(
-                                        subtitle,
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MusColors.OnBackgroundSecondary,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                    )
-                                }
-                            }
-                        }
-                    }
-
-                    // Custom Playlists
-                    if (customPlaylists.isNotEmpty()) {
-                        item {
-                            Spacer(Modifier.height(Spacing.sm))
-                            Text(
-                                "Custom Playlists",
-                                style = MaterialTheme.typography.labelLarge,
-                                color = MusColors.OnBackgroundSecondary,
-                                modifier = Modifier.padding(horizontal = Spacing.base, vertical = Spacing.xs),
-                            )
-                        }
-
-                        items(customPlaylists) { playlist ->
+                    // All Playlists
+                    if (playlists.isNotEmpty()) {
+                        items(playlists, key = { it.id }) { playlist ->
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -270,7 +199,7 @@ fun LibraryScreen(
                                         .padding(12.dp),
                                 )
                                 Spacer(Modifier.width(Spacing.md))
-                                Column {
+                                Column(modifier = Modifier.weight(1f)) {
                                     Text(
                                         playlist.name,
                                         style = MaterialTheme.typography.titleSmall,
@@ -280,6 +209,15 @@ fun LibraryScreen(
                                         "Playlist",
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MusColors.OnBackgroundSecondary,
+                                    )
+                                }
+                                IconButton(
+                                    onClick = { playlistToDelete = playlist }
+                                ) {
+                                    Icon(
+                                        Icons.Rounded.DeleteOutline,
+                                        contentDescription = "Delete Playlist",
+                                        tint = MusColors.OnBackgroundTertiary,
                                     )
                                 }
                             }
@@ -353,12 +291,20 @@ fun LibraryScreen(
             3 -> {
                 // All songs with Language Filter Chips
                 Column(modifier = Modifier.fillMaxSize()) {
-                    val filterOptions = listOf(
-                        "All" to "All (${allTracks.size})",
-                        "Hindi" to "Hindi",
-                        "English" to "English",
-                        "Regional" to "Regional (Telugu/Tamil/Malayalam)"
-                    )
+                    val hasUnknown = remember(allTracks) {
+                        allTracks.any { it.language.equals("Unknown", ignoreCase = true) || it.language.isBlank() }
+                    }
+                    val filterOptions = remember(allTracks.size, hasUnknown) {
+                        buildList {
+                            add("All" to "All (${allTracks.size})")
+                            add("Hindi" to "Hindi")
+                            add("English" to "English")
+                            add("Other" to "Other")
+                            if (hasUnknown) {
+                                add("Unknown" to "Unknown")
+                            }
+                        }
+                    }
                     LazyRow(
                         contentPadding = PaddingValues(horizontal = Spacing.base, vertical = Spacing.xs),
                         horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
@@ -399,6 +345,7 @@ fun LibraryScreen(
                                     track = track,
                                     onClick = { onTrackClick(track, filteredTracks) },
                                     onFavoriteToggle = { viewModel.toggleFavorite(track.id) },
+                                    onMoreClick = { selectedTrackForMenu = track },
                                 )
                             }
                         }
@@ -426,6 +373,7 @@ fun LibraryScreen(
                                 track = track,
                                 onClick = { onTrackClick(track, favorites) },
                                 onFavoriteToggle = { viewModel.toggleFavorite(track.id) },
+                                onMoreClick = { selectedTrackForMenu = track },
                             )
                         }
                     }
@@ -433,6 +381,12 @@ fun LibraryScreen(
             }
         }
     }
+
+    SongMenuContainer(
+        selectedTrack = selectedTrackForMenu,
+        onDismissMenu = { selectedTrackForMenu = null },
+        onNavigateToAlbum = onAlbumClick,
+    )
 
     // Create playlist dialog
     if (showCreateDialog) {
@@ -466,6 +420,38 @@ fun LibraryScreen(
             },
             dismissButton = {
                 TextButton(onClick = { showCreateDialog = false; newPlaylistName = "" }) {
+                    Text("Cancel", color = MusColors.OnBackgroundSecondary)
+                }
+            },
+            containerColor = MusColors.SurfaceElevated,
+        )
+    }
+
+    if (playlistToDelete != null) {
+        val target = playlistToDelete!!
+        AlertDialog(
+            onDismissRequest = { playlistToDelete = null },
+            title = {
+                Text("Delete Playlist", color = MusColors.OnBackground)
+            },
+            text = {
+                Text(
+                    "Are you sure you want to delete \"${target.name}\"? The songs will remain in your library.",
+                    color = MusColors.OnBackgroundSecondary,
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        viewModel.deletePlaylist(target.id)
+                        playlistToDelete = null
+                    }
+                ) {
+                    Text("Delete", color = MusColors.Error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { playlistToDelete = null }) {
                     Text("Cancel", color = MusColors.OnBackgroundSecondary)
                 }
             },

@@ -8,10 +8,18 @@ import androidx.room.PrimaryKey
  * Stores normalized peak amplitudes (0.0–1.0) as a comma-separated string
  * for efficient Room storage. Typically ~200 samples per track.
  */
+object WaveformStatus {
+    const val READY = "READY"
+    const val EXTRACTING = "EXTRACTING"
+    const val FAILED = "FAILED"
+    const val NEEDS_REPAIR = "NEEDS_REPAIR"
+}
+
 @Entity(tableName = "waveforms")
 data class WaveformData(
     @PrimaryKey val trackId: Long,
     val peaks: String, // comma-separated floats, e.g. "0.12,0.45,0.78,..."
     val sampleCount: Int,
+    val status: String = WaveformStatus.READY,
     val generatedAt: Long = System.currentTimeMillis(),
 )

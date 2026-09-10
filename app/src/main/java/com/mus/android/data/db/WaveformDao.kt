@@ -13,4 +13,11 @@ interface WaveformDao {
 
     @Query("DELETE FROM waveforms WHERE trackId = :trackId")
     suspend fun delete(trackId: Long)
+
+    @Query("SELECT * FROM waveforms WHERE status != 'READY'")
+    suspend fun getWaveformsNeedingRepair(): List<WaveformData>
+
+    @Query("UPDATE waveforms SET status = :status WHERE trackId = :trackId")
+    suspend fun updateStatus(trackId: Long, status: String)
 }
+

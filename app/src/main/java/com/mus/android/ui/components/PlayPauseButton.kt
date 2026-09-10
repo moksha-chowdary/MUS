@@ -40,56 +40,47 @@ fun PlayPauseMorphButton(
     Canvas(modifier = modifier.size(size)) {
         val w = this.size.width
         val h = this.size.height
-        val padding = w * 0.2f
-
         val t = morphProgress
 
-        // Interpolate between play triangle and pause bars
-        // Play triangle: three points forming a right-pointing triangle
-        // Pause bars: two vertical rectangles
-
-        // Left shape (left bar / left side of triangle)
+        // Mathematically and optically centered morph between Play triangle (t=0) and Pause bars (t=1)
+        // Left shape: left bar <-> left trapezoid of play triangle
         val leftPath = Path().apply {
-            // Top-left corner
             moveTo(
-                lerp(padding + w * 0.05f, padding, t),           // x
-                lerp(padding * 0.8f, padding, t)                  // y
+                lerp(0.28f * w, 0.24f * w, t),
+                lerp(0.18f * h, 0.18f * h, t)
             )
-            // Top-right corner
             lineTo(
-                lerp(w * 0.55f, padding + w * 0.15f, t),         // x
-                lerp(h * 0.5f, padding, t)                         // y
+                lerp(0.54f * w, 0.40f * w, t),
+                lerp(0.34f * h, 0.18f * h, t)
             )
-            // Bottom-right corner
             lineTo(
-                lerp(w * 0.55f, padding + w * 0.15f, t),         // x
-                lerp(h * 0.5f, h - padding, t)                    // y
+                lerp(0.54f * w, 0.40f * w, t),
+                lerp(0.66f * h, 0.82f * h, t)
             )
-            // Bottom-left corner
             lineTo(
-                lerp(padding + w * 0.05f, padding, t),           // x
-                lerp(h - padding * 0.8f, h - padding, t)          // y
+                lerp(0.28f * w, 0.24f * w, t),
+                lerp(0.82f * h, 0.82f * h, t)
             )
             close()
         }
 
-        // Right shape (right bar / right side of triangle)
+        // Right shape: right bar <-> right tip of play triangle
         val rightPath = Path().apply {
             moveTo(
-                lerp(w * 0.55f, w - padding - w * 0.15f, t),     // x
-                lerp(h * 0.5f, padding, t)                         // y
+                lerp(0.54f * w, 0.60f * w, t),
+                lerp(0.34f * h, 0.18f * h, t)
             )
             lineTo(
-                lerp(w - padding * 0.8f, w - padding, t),        // x
-                lerp(h * 0.5f, padding, t)                         // y
+                lerp(0.80f * w, 0.76f * w, t),
+                lerp(0.50f * h, 0.18f * h, t)
             )
             lineTo(
-                lerp(w - padding * 0.8f, w - padding, t),        // x
-                lerp(h * 0.5f, h - padding, t)                    // y
+                lerp(0.80f * w, 0.76f * w, t),
+                lerp(0.50f * h, 0.82f * h, t)
             )
             lineTo(
-                lerp(w * 0.55f, w - padding - w * 0.15f, t),     // x
-                lerp(h * 0.5f, h - padding, t)                    // y
+                lerp(0.54f * w, 0.60f * w, t),
+                lerp(0.66f * h, 0.82f * h, t)
             )
             close()
         }

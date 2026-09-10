@@ -25,5 +25,18 @@ data class Track(
     val dateAdded: Long = 0,
     val dateModified: Long = 0,
     val path: String? = null,
+    val albumArtist: String = "",
+    val discNumber: Int = 0,
+    val genre: String? = null,
+    val composer: String? = null,
     val language: String = "English",
+    val playCount: Int = 0,
+    val lastPlayed: Long = 0,
+    
+    // Metadata Enrichment Fields
+    val artistArtworkUri: String? = null,
+    val metadataSource: String = MetadataSource.EMBEDDED, // EMBEDDED, EXTERNAL, MERGED
+    val metadataStatus: String = MetadataStatus.NEEDS_LOOKUP, // COMPLETE, PARTIAL, ENRICHING, FAILED, NEEDS_REVIEW, NEEDS_LOOKUP
+    val metadataConfidence: String = MetadataConfidence.HIGH, // HIGH, LOW
+    val metadataLastUpdated: Long = 0,
 )

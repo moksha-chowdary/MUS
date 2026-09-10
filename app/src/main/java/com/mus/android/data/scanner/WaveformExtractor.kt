@@ -7,6 +7,7 @@ import android.media.MediaFormat
 import android.net.Uri
 import com.mus.android.data.db.WaveformDao
 import com.mus.android.data.model.WaveformData
+import com.mus.android.data.model.WaveformStatus
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -35,14 +36,29 @@ class WaveformExtractor @Inject constructor(
     }
 
     /**
-     * Returns cached waveform data if available, otherwise extracts it from the audio file.
-     * Returns null if extraction fails.
+     * Returns cached waveform data if available and READY, otherwise extracts from the audio file.
+     * Returns null if extraction fails — never returns synthetic/fake data.
+     * Failed extractions are recorded in Room for later background repair.
      */
     suspend fun getWaveform(trackId: Long, uri: String): List<Float>? {
         // Check cache first
         waveformDao.getWaveform(trackId)?.let { cached ->
-            return parsePeaks(cached.peaks)
+            return when (cached.status) {
+                WaveformStatus.READY -> parsePeaks(cached.peaks)
+                WaveformStatus.EXTRACTING -> null // In progress
+                else -> null // FAILED or NEEDS_REPAIR — don't return stale data
+            }
         }
+
+        // Mark as extracting
+        waveformDao.insert(
+            WaveformData(
+                trackId = trackId,
+                peaks = "",
+                sampleCount = 0,
+                status = WaveformStatus.EXTRACTING,
+            )
+        )
 
         // Extract from audio
         val peaks = withContext(Dispatchers.Default) {
@@ -52,19 +68,45 @@ class WaveformExtractor @Inject constructor(
                 e.printStackTrace()
                 null
             }
-        } ?: return null
+        }
 
-        // Cache the result
-        val peaksString = peaks.joinToString(",") { "%.4f".format(it) }
+        if (peaks == null || peaks.isEmpty()) {
+            // Record failure for background repair
+            waveformDao.insert(
+                WaveformData(
+                    trackId = trackId,
+                    peaks = "",
+                    sampleCount = 0,
+                    status = WaveformStatus.FAILED,
+                )
+            )
+            return null
+        }
+
+        // Cache the successful result
+        val peaksString = peaks.joinToString(",") { String.format(java.util.Locale.US, "%.4f", it) }
         waveformDao.insert(
             WaveformData(
                 trackId = trackId,
                 peaks = peaksString,
                 sampleCount = peaks.size,
+                status = WaveformStatus.READY,
             )
         )
 
         return peaks
+    }
+
+    /**
+     * Re-attempts extraction for all waveforms with non-READY status.
+     * Call this during background idle time.
+     */
+    suspend fun repairWaveforms(getUriForTrack: suspend (Long) -> String?) {
+        val needsRepair = waveformDao.getWaveformsNeedingRepair()
+        for (waveform in needsRepair) {
+            val uri = getUriForTrack(waveform.trackId) ?: continue
+            getWaveform(waveform.trackId, uri) // Re-attempts extraction
+        }
     }
 
     private fun parsePeaks(peaksString: String): List<Float> {
@@ -189,3 +231,4 @@ class WaveformExtractor @Inject constructor(
         }
     }
 }
+

@@ -26,9 +26,15 @@ class LibraryViewModel @Inject constructor(
     val filteredTracks: StateFlow<List<Track>> = combine(allTracks, _selectedLanguageFilter) { tracks, filter ->
         when (filter) {
             "All" -> tracks
-            "Hindi" -> tracks.filter { it.language == "Hindi" }
-            "English" -> tracks.filter { it.language == "English" }
-            "Regional" -> tracks.filter { it.language == "Regional" }
+            "Hindi" -> tracks.filter { it.language.equals("Hindi", ignoreCase = true) }
+            "English" -> tracks.filter { it.language.equals("English", ignoreCase = true) }
+            "Other", "Regional" -> tracks.filter {
+                it.language.equals("Other", ignoreCase = true) ||
+                it.language.equals("Regional", ignoreCase = true)
+            }
+            "Unknown" -> tracks.filter {
+                it.language.equals("Unknown", ignoreCase = true) || it.language.isBlank()
+            }
             else -> tracks
         }
     }.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())

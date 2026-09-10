@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="48dp"
+    android:height="48dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- MUS Acoustic Waveform 'M' Mark -->
+    <path
+        android:fillColor="#EEEEEE"
+        android:pathData="M 31,39 A 3,3 0 0,1 37,39 L 37,69 A 3,3 0 0,1 31,69 Z
+                          M 41,48 A 3,3 0 0,1 47,48 L 47,60 A 3,3 0 0,1 41,60 Z
+                          M 51,33 A 3,3 0 0,1 57,33 L 57,75 A 3,3 0 0,1 51,75 Z
+                          M 61,48 A 3,3 0 0,1 67,48 L 67,60 A 3,3 0 0,1 61,60 Z
+                          M 71,39 A 3,3 0 0,1 77,39 L 77,69 A 3,3 0 0,1 71,69 Z" />
+    <!-- Signature Nothing-inspired audio dot -->
+    <path
+        android:fillColor="#E05555"
+        android:pathData="M 71.25,27.5 A 2.75,2.75 0 1,0 76.75,27.5 A 2.75,2.75 0 1,0 71.25,27.5 Z" />
+</vector>

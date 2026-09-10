@@ -24,7 +24,10 @@ object AppModule {
             context,
             MusDatabase::class.java,
             "mus_database"
-        ).fallbackToDestructiveMigration().build()
+        )
+            .addMigrations(MusDatabase.MIGRATION_3_4, MusDatabase.MIGRATION_4_5)
+            .fallbackToDestructiveMigration()
+            .build()
     }
 
     @Provides fun provideTrackDao(db: MusDatabase): TrackDao = db.trackDao()

@@ -24,6 +24,7 @@ sealed class MusRoute(val route: String) {
     data object Playlist : MusRoute("playlist/{playlistId}") {
         fun create(playlistId: Long) = "playlist/$playlistId"
     }
+    data object Settings : MusRoute("settings")
 }
 
 @Composable
@@ -41,6 +42,7 @@ fun MusNavHost(
             HomeScreen(
                 onAlbumClick = { navController.navigate(MusRoute.Album.create(it)) },
                 onPlaylistClick = { navController.navigate(MusRoute.Playlist.create(it)) },
+                onSettingsClick = { navController.navigate(MusRoute.Settings.route) },
                 onTrackClick = onTrackClick,
             )
         }
@@ -91,6 +93,10 @@ fun MusNavHost(
                 onBack = { navController.popBackStack() },
                 onQueueClick = { /* Queue sheet handled in MusApp */ },
             )
+        }
+
+        composable(MusRoute.Settings.route) {
+            SettingsScreen(onBack = { navController.popBackStack() })
         }
     }
 }

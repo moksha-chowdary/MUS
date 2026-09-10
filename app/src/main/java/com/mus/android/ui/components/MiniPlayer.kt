@@ -20,9 +20,11 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
+import androidx.hilt.navigation.compose.hiltViewModel
 import com.mus.android.data.model.Track
 import com.mus.android.ui.theme.MusColors
 import com.mus.android.ui.theme.Spacing
+import com.mus.android.ui.viewmodel.NowPlayingViewModel
 
 /**
  * MUS mini-player — compact bottom bar during playback.
@@ -33,17 +35,22 @@ import com.mus.android.ui.theme.Spacing
  * - Play/pause morph button
  * - Skip next
  * - Hairline progress underline
+ * - Self-contained high-frequency position collection (avoids root recomposition)
  */
 @Composable
 fun MiniPlayer(
     track: Track,
     isPlaying: Boolean,
-    progress: Float, // 0.0–1.0
     onTap: () -> Unit,
     onPlayPause: () -> Unit,
     onSkipNext: () -> Unit,
     modifier: Modifier = Modifier,
+    viewModel: NowPlayingViewModel = hiltViewModel(),
+    overrideProgress: Float? = null,
 ) {
+    val position by viewModel.position.collectAsState()
+    val duration by viewModel.duration.collectAsState()
+    val progress = overrideProgress ?: if (duration > 0) (position.toFloat() / duration.toFloat()).coerceIn(0f, 1f) else 0f
     // Scale bounce on play/pause
     var bouncing by remember { mutableStateOf(false) }
     val scale by animateFloatAsState(

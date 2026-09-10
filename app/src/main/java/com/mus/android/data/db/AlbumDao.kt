@@ -12,6 +12,9 @@ interface AlbumDao {
     @Query("SELECT * FROM albums WHERE id = :id")
     suspend fun getAlbumById(id: Long): Album?
 
+    @Query("SELECT * FROM albums")
+    suspend fun getAllAlbumsOnce(): List<Album>
+
     @Query("SELECT * FROM albums WHERE artist = :artist ORDER BY year DESC")
     fun getAlbumsByArtist(artist: String): Flow<List<Album>>
 
@@ -26,4 +29,7 @@ interface AlbumDao {
 
     @Query("SELECT * FROM albums ORDER BY RANDOM() LIMIT :limit")
     fun getRandomAlbums(limit: Int = 10): Flow<List<Album>>
+
+    @Query("DELETE FROM albums WHERE id IN (:ids)")
+    suspend fun deleteAlbumsByIds(ids: List<Long>)
 }

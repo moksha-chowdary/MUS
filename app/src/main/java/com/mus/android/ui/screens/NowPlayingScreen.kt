@@ -1,6 +1,7 @@
 package com.mus.android.ui.screens
 
 import androidx.compose.animation.*
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -15,6 +16,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.media3.common.Player
@@ -28,6 +30,14 @@ import com.mus.android.ui.theme.MusColors
 import com.mus.android.ui.theme.Spacing
 import com.mus.android.ui.theme.TimestampStyle
 import com.mus.android.ui.viewmodel.NowPlayingViewModel
+
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.material.icons.automirrored.rounded.PlaylistAdd
+import com.mus.android.ui.components.DepthCarousel
 
 @Composable
 fun NowPlayingScreen(
@@ -44,10 +54,44 @@ fun NowPlayingScreen(
     val shuffleEnabled by viewModel.shuffleEnabled.collectAsState()
     val repeatMode by viewModel.repeatMode.collectAsState()
     val playlists by viewModel.playlists.collectAsState()
+    val existingPlaylistIds by viewModel.existingPlaylistIdsForCurrentTrack.collectAsState()
+    val queue by viewModel.queue.collectAsState()
+    val currentIndex by viewModel.currentIndex.collectAsState()
+    val context = LocalContext.current
+
+    val upcomingTracks = remember(queue, currentIndex) {
+        if (currentIndex in queue.indices && currentIndex + 1 < queue.size) {
+            queue.subList(currentIndex + 1, queue.size)
+        } else {
+            emptyList()
+        }
+    }
 
     var showAddToPlaylist by remember { mutableStateOf(false) }
 
     val progress = if (duration > 0) position.toFloat() / duration.toFloat() else 0f
+
+    // Artwork swipe pager backed by queue index
+    val pagerState = rememberPagerState(
+        initialPage = currentIndex.coerceAtLeast(0),
+        pageCount = { if (queue.isNotEmpty()) queue.size else 1 }
+    )
+
+    // Sync pager when track changes from playback/buttons
+    LaunchedEffect(currentIndex, queue.size) {
+        if (queue.isNotEmpty() && currentIndex in queue.indices && pagerState.currentPage != currentIndex) {
+            pagerState.animateScrollToPage(currentIndex)
+        }
+    }
+
+    // When user swipes to another page, commit track change
+    LaunchedEffect(pagerState.settledPage) {
+        if (queue.isNotEmpty() && pagerState.settledPage in queue.indices && pagerState.settledPage != currentIndex) {
+            viewModel.playQueueItem(pagerState.settledPage)
+        }
+    }
+
+    val scrollState = rememberScrollState()
 
     Box(modifier = Modifier.fillMaxSize()) {
         // Ambient gradient background — full intensity
@@ -61,6 +105,7 @@ fun NowPlayingScreen(
                 .fillMaxSize()
                 .statusBarsPadding()
                 .navigationBarsPadding()
+                .verticalScroll(scrollState)
                 .padding(horizontal = Spacing.xl),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
@@ -97,23 +142,35 @@ fun NowPlayingScreen(
 
             Spacer(Modifier.height(Spacing.xl))
 
-            // Artwork — large, centered
-            AnimatedContent(
-                targetState = track?.artworkUri,
-                transitionSpec = {
-                    (fadeIn(animationSpec = tween(400)) + slideInVertically { it / 20 })
-                        .togetherWith(fadeOut(animationSpec = tween(400)))
-                },
-                label = "artwork_transition"
-            ) { artworkUri ->
+            // Artwork — HorizontalPager swipe between tracks with parallax
+            HorizontalPager(
+                state = pagerState,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(1f),
+                contentPadding = PaddingValues(horizontal = 16.dp),
+                pageSpacing = 16.dp,
+            ) { page ->
+                val pageTrack = queue.getOrNull(page) ?: track
+                val pageOffset = (pagerState.currentPage - page) + pagerState.currentPageOffsetFraction
+                val scale = 1f - (kotlin.math.abs(pageOffset) * 0.08f).coerceIn(0f, 0.15f)
+                val rotation = (pageOffset * -3f).coerceIn(-6f, 6f)
+                val alpha = 1f - (kotlin.math.abs(pageOffset) * 0.4f).coerceIn(0f, 0.6f)
+
                 AsyncImage(
-                    model = artworkUri,
-                    contentDescription = track?.title,
+                    model = pageTrack?.artworkUri,
+                    contentDescription = pageTrack?.title,
                     contentScale = ContentScale.Crop,
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .aspectRatio(1f)
+                        .fillMaxSize()
+                        .graphicsLayer {
+                            scaleX = scale
+                            scaleY = scale
+                            rotationZ = rotation
+                            this.alpha = alpha
+                        }
                         .clip(RoundedCornerShape(16.dp))
+                        .background(MusColors.SurfaceVariant)
                 )
             }
 
@@ -155,7 +212,7 @@ fun NowPlayingScreen(
                         // Add to Playlist
                         IconButton(onClick = { showAddToPlaylist = true }) {
                             Icon(
-                                imageVector = Icons.Rounded.PlaylistAdd,
+                                imageVector = Icons.AutoMirrored.Rounded.PlaylistAdd,
                                 contentDescription = "Add to playlist",
                                 tint = MusColors.OnBackgroundSecondary,
                                 modifier = Modifier.size(24.dp),
@@ -214,37 +271,44 @@ fun NowPlayingScreen(
 
             Spacer(Modifier.height(Spacing.xl))
 
-            // Playback controls
+            // Playback controls — mathematically centered layout (Part 14)
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceEvenly,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                // Shuffle
-                IconButton(onClick = { viewModel.toggleShuffle() }) {
-                    Icon(
-                        Icons.Rounded.Shuffle,
-                        contentDescription = "Shuffle",
-                        tint = if (shuffleEnabled) MusColors.OnBackground
-                               else MusColors.OnBackgroundTertiary,
-                        modifier = Modifier.size(22.dp),
-                    )
-                }
-
-                // Previous
-                IconButton(
-                    onClick = { viewModel.skipPrevious() },
-                    modifier = Modifier.size(48.dp),
+                // Left control group (Shuffle + Previous)
+                Row(
+                    modifier = Modifier.weight(1f),
+                    horizontalArrangement = Arrangement.SpaceEvenly,
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Icon(
-                        Icons.Rounded.SkipPrevious,
-                        contentDescription = "Previous",
-                        tint = MusColors.OnBackground,
-                        modifier = Modifier.size(32.dp),
-                    )
+                    IconButton(
+                        onClick = { viewModel.toggleShuffle() },
+                        modifier = Modifier.size(48.dp),
+                    ) {
+                        Icon(
+                            Icons.Rounded.Shuffle,
+                            contentDescription = "Shuffle",
+                            tint = if (shuffleEnabled) MusColors.OnBackground
+                                   else MusColors.OnBackgroundTertiary,
+                            modifier = Modifier.size(22.dp),
+                        )
+                    }
+
+                    IconButton(
+                        onClick = { viewModel.skipPrevious() },
+                        modifier = Modifier.size(48.dp),
+                    ) {
+                        Icon(
+                            Icons.Rounded.SkipPrevious,
+                            contentDescription = "Previous",
+                            tint = MusColors.OnBackground,
+                            modifier = Modifier.size(32.dp),
+                        )
+                    }
                 }
 
-                // Play/Pause (large, shape morph)
+                // Centered Play/Pause Button
                 Box(
                     modifier = Modifier
                         .size(64.dp)
@@ -260,48 +324,100 @@ fun NowPlayingScreen(
                     )
                 }
 
-                // Next
-                IconButton(
-                    onClick = { viewModel.skipNext() },
-                    modifier = Modifier.size(48.dp),
+                // Right control group (Next + Repeat)
+                Row(
+                    modifier = Modifier.weight(1f),
+                    horizontalArrangement = Arrangement.SpaceEvenly,
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Icon(
-                        Icons.Rounded.SkipNext,
-                        contentDescription = "Next",
-                        tint = MusColors.OnBackground,
-                        modifier = Modifier.size(32.dp),
-                    )
-                }
+                    IconButton(
+                        onClick = { viewModel.skipNext() },
+                        modifier = Modifier.size(48.dp),
+                    ) {
+                        Icon(
+                            Icons.Rounded.SkipNext,
+                            contentDescription = "Next",
+                            tint = MusColors.OnBackground,
+                            modifier = Modifier.size(32.dp),
+                        )
+                    }
 
-                // Repeat
-                IconButton(onClick = { viewModel.cycleRepeatMode() }) {
-                    Icon(
-                        imageVector = when (repeatMode) {
-                            Player.REPEAT_MODE_ONE -> Icons.Rounded.RepeatOne
-                            else -> Icons.Rounded.Repeat
-                        },
-                        contentDescription = "Repeat",
-                        tint = when (repeatMode) {
-                            Player.REPEAT_MODE_OFF -> MusColors.OnBackgroundTertiary
-                            else -> MusColors.OnBackground
-                        },
-                        modifier = Modifier.size(22.dp),
-                    )
+                    IconButton(
+                        onClick = { viewModel.cycleRepeatMode() },
+                        modifier = Modifier.size(48.dp),
+                    ) {
+                        Icon(
+                            imageVector = when (repeatMode) {
+                                Player.REPEAT_MODE_ONE -> Icons.Rounded.RepeatOne
+                                else -> Icons.Rounded.Repeat
+                            },
+                            contentDescription = "Repeat",
+                            tint = when (repeatMode) {
+                                Player.REPEAT_MODE_OFF -> MusColors.OnBackgroundTertiary
+                                else -> MusColors.OnBackground
+                            },
+                            modifier = Modifier.size(22.dp),
+                        )
+                    }
                 }
             }
 
-            Spacer(Modifier.weight(1f))
+            if (upcomingTracks.isNotEmpty()) {
+                Spacer(Modifier.height(Spacing.xl))
+                DepthCarousel(
+                    upcomingTracks = upcomingTracks,
+                    currentIndex = currentIndex,
+                    onTrackClick = { _, actualIndex ->
+                        viewModel.playQueueItem(actualIndex)
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+
+            Spacer(Modifier.height(Spacing.xxl))
         }
 
         if (showAddToPlaylist) {
             com.mus.android.ui.components.AddToPlaylistSheet(
                 playlists = playlists,
-                onPlaylistSelected = {
-                    viewModel.addTrackToPlaylist(it)
-                    showAddToPlaylist = false
+                alreadyInPlaylistIds = existingPlaylistIds,
+                onPlaylistSelected = { chosenPlaylistId ->
+                    val chosen = playlists.find { it.id == chosenPlaylistId }
+                    val isAlready = chosenPlaylistId in existingPlaylistIds
+                    if (isAlready) {
+                        android.widget.Toast.makeText(
+                            context,
+                            "Already in \"${chosen?.name ?: "playlist"}\"",
+                            android.widget.Toast.LENGTH_SHORT
+                        ).show()
+                        showAddToPlaylist = false
+                    } else {
+                        viewModel.addTrackToPlaylist(chosenPlaylistId) { added ->
+                            if (added) {
+                                android.widget.Toast.makeText(
+                                    context,
+                                    "Added to \"${chosen?.name ?: "playlist"}\"",
+                                    android.widget.Toast.LENGTH_SHORT
+                                ).show()
+                            } else {
+                                android.widget.Toast.makeText(
+                                    context,
+                                    "Already in \"${chosen?.name ?: "playlist"}\"",
+                                    android.widget.Toast.LENGTH_SHORT
+                                ).show()
+                            }
+                        }
+                        showAddToPlaylist = false
+                    }
                 },
-                onCreateNew = {
-                    viewModel.createPlaylistAndAddTrack(it)
+                onCreateNew = { name ->
+                    viewModel.createPlaylistAndAddTrack(name) {
+                        android.widget.Toast.makeText(
+                            context,
+                            "Created \"$name\" and added song",
+                            android.widget.Toast.LENGTH_SHORT
+                        ).show()
+                    }
                     showAddToPlaylist = false
                 },
                 onDismiss = { showAddToPlaylist = false }

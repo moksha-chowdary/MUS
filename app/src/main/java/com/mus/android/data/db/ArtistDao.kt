@@ -12,6 +12,9 @@ interface ArtistDao {
     @Query("SELECT * FROM artists WHERE id = :id")
     suspend fun getArtistById(id: Long): Artist?
 
+    @Query("SELECT * FROM artists")
+    suspend fun getAllArtistsOnce(): List<Artist>
+
     @Query("SELECT * FROM artists WHERE name LIKE '%' || :query || '%' ORDER BY name ASC")
     fun search(query: String): Flow<List<Artist>>
 
@@ -20,4 +23,7 @@ interface ArtistDao {
 
     @Query("DELETE FROM artists")
     suspend fun deleteAll()
+
+    @Query("DELETE FROM artists WHERE id IN (:ids)")
+    suspend fun deleteArtistsByIds(ids: List<Long>)
 }

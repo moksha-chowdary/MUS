@@ -3,8 +3,11 @@ package com.mus.android.ui.screens
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.text.BasicTextField
+import com.mus.android.ui.components.AnimatedListItem
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Clear
 import androidx.compose.material.icons.rounded.Search
@@ -20,6 +23,7 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.mus.android.data.model.Track
 import com.mus.android.ui.components.AlbumCard
+import com.mus.android.ui.components.SongMenuContainer
 import com.mus.android.ui.components.TrackRow
 import com.mus.android.ui.theme.MusColors
 import com.mus.android.ui.theme.Spacing
@@ -38,6 +42,10 @@ fun SearchScreen(
     val artistResults by viewModel.artistResults.collectAsState()
     val hasResults by viewModel.hasResults.collectAsState()
     val focusRequester = remember { FocusRequester() }
+    var selectedTrackForMenu by remember { mutableStateOf<Track?>(null) }
+
+    var selectedFilter by remember { mutableStateOf("All") }
+    val filterOptions = listOf("All", "Songs", "Albums", "Artists")
 
     Column(
         modifier = Modifier
@@ -98,7 +106,32 @@ fun SearchScreen(
             }
         }
 
-        Spacer(Modifier.height(Spacing.base))
+        // Filter chips when query is not blank
+        if (query.isNotBlank()) {
+            Spacer(Modifier.height(Spacing.sm))
+            LazyRow(
+                contentPadding = PaddingValues(horizontal = Spacing.base),
+                horizontalArrangement = Arrangement.spacedBy(Spacing.xs),
+            ) {
+                items(filterOptions) { filter ->
+                    val isSelected = selectedFilter == filter
+                    FilterChip(
+                        selected = isSelected,
+                        onClick = { selectedFilter = filter },
+                        label = { Text(filter, style = MaterialTheme.typography.labelSmall) },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = MusColors.OnBackground,
+                            selectedLabelColor = MusColors.Background,
+                            containerColor = MusColors.SurfaceVariant,
+                            labelColor = MusColors.OnBackgroundSecondary,
+                        ),
+                        border = null,
+                    )
+                }
+            }
+        }
+
+        Spacer(Modifier.height(Spacing.sm))
 
         if (query.isEmpty()) {
             // Empty state
@@ -129,54 +162,92 @@ fun SearchScreen(
             LazyColumn(
                 contentPadding = PaddingValues(bottom = 120.dp),
             ) {
-                // Albums
-                if (albumResults.isNotEmpty()) {
+                // Artists section
+                if ((selectedFilter == "All" || selectedFilter == "Artists") && artistResults.isNotEmpty()) {
                     item {
                         Text(
-                            "Albums",
-                            style = MaterialTheme.typography.labelLarge,
-                            color = MusColors.OnBackgroundSecondary,
-                            modifier = Modifier.padding(horizontal = Spacing.base, vertical = Spacing.sm),
+                            "Artists",
+                            style = MaterialTheme.typography.titleSmall,
+                            color = MusColors.OnBackground,
+                            modifier = Modifier.padding(horizontal = Spacing.base, vertical = Spacing.xs),
                         )
+                        Spacer(Modifier.height(Spacing.xs))
                     }
-                    items(albumResults.take(5)) { album ->
-                        TrackRow(
-                            track = Track(
-                                id = album.id,
-                                title = album.title,
-                                artist = album.artist,
-                                albumId = album.id,
-                                albumTitle = album.title,
-                                duration = album.totalDuration,
-                                uri = "",
-                                artworkUri = album.artworkUri,
-                            ),
-                            onClick = { onAlbumClick(album.id) },
-                            showArtwork = true,
-                        )
+                    item {
+                        LazyRow(
+                            contentPadding = PaddingValues(horizontal = Spacing.base),
+                            horizontalArrangement = Arrangement.spacedBy(Spacing.md),
+                        ) {
+                            items(artistResults) { artist ->
+                                com.mus.android.ui.components.ArtistCard(
+                                    name = artist.name,
+                                    artworkUri = artist.artworkUri,
+                                    onClick = { onArtistClick(artist.id) },
+                                )
+                            }
+                        }
+                        Spacer(Modifier.height(Spacing.md))
                     }
                 }
 
-                // Songs
-                if (trackResults.isNotEmpty()) {
+                // Albums section
+                if ((selectedFilter == "All" || selectedFilter == "Albums") && albumResults.isNotEmpty()) {
+                    item {
+                        Text(
+                            "Albums",
+                            style = MaterialTheme.typography.titleSmall,
+                            color = MusColors.OnBackground,
+                            modifier = Modifier.padding(horizontal = Spacing.base, vertical = Spacing.xs),
+                        )
+                        Spacer(Modifier.height(Spacing.xs))
+                    }
+                    item {
+                        LazyRow(
+                            contentPadding = PaddingValues(horizontal = Spacing.base),
+                            horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
+                        ) {
+                            items(albumResults) { album ->
+                                com.mus.android.ui.components.AlbumCard(
+                                    title = album.title,
+                                    artist = album.artist,
+                                    artworkUri = album.artworkUri,
+                                    onClick = { onAlbumClick(album.id) },
+                                )
+                            }
+                        }
+                        Spacer(Modifier.height(Spacing.md))
+                    }
+                }
+
+                // Songs section
+                if ((selectedFilter == "All" || selectedFilter == "Songs") && trackResults.isNotEmpty()) {
                     item {
                         Text(
                             "Songs",
-                            style = MaterialTheme.typography.labelLarge,
-                            color = MusColors.OnBackgroundSecondary,
-                            modifier = Modifier.padding(horizontal = Spacing.base, vertical = Spacing.sm),
+                            style = MaterialTheme.typography.titleSmall,
+                            color = MusColors.OnBackground,
+                            modifier = Modifier.padding(horizontal = Spacing.base, vertical = Spacing.xs),
                         )
                     }
-                    items(trackResults) { track ->
-                        TrackRow(
-                            track = track,
-                            onClick = { onTrackClick(track, trackResults) },
-                        )
+                    itemsIndexed(trackResults, key = { _, track -> track.id }) { index, track ->
+                        AnimatedListItem(index = index) {
+                            TrackRow(
+                                track = track,
+                                onClick = { onTrackClick(track, trackResults) },
+                                onMoreClick = { selectedTrackForMenu = track },
+                            )
+                        }
                     }
                 }
             }
         }
     }
+
+    SongMenuContainer(
+        selectedTrack = selectedTrackForMenu,
+        onDismissMenu = { selectedTrackForMenu = null },
+        onNavigateToAlbum = onAlbumClick,
+    )
 
     LaunchedEffect(Unit) {
         focusRequester.requestFocus()

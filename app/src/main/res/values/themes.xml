@@ -10,6 +10,7 @@
 
     <style name="Theme.MUS.Splash" parent="Theme.SplashScreen">
         <item name="windowSplashScreenBackground">@android:color/black</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/ic_mus_logo</item>
         <item name="postSplashScreenTheme">@style/Theme.MUS</item>
     </style>
 </resources>

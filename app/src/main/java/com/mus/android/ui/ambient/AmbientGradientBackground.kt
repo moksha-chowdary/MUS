@@ -1,5 +1,6 @@
 package com.mus.android.ui.ambient
 
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.fillMaxSize
@@ -98,7 +99,7 @@ fun AmbientGradientBackground(
 
         drawCircle(
             brush = Brush.radialGradient(
-                colors = listOf(animatedDominant.copy(alpha = alpha), Color.Transparent),
+                colors = listOf<Color>(animatedDominant.copy(alpha = alpha), Color.Transparent),
                 center = offset1,
                 radius = radius,
             ),
@@ -108,7 +109,7 @@ fun AmbientGradientBackground(
 
         drawCircle(
             brush = Brush.radialGradient(
-                colors = listOf(animatedVibrant.copy(alpha = alpha * 0.8f), Color.Transparent),
+                colors = listOf<Color>(animatedVibrant.copy(alpha = alpha * 0.8f), Color.Transparent),
                 center = offset2,
                 radius = radius * 0.85f,
             ),
@@ -118,7 +119,7 @@ fun AmbientGradientBackground(
 
         drawCircle(
             brush = Brush.radialGradient(
-                colors = listOf(animatedMuted.copy(alpha = alpha * 0.6f), Color.Transparent),
+                colors = listOf<Color>(animatedMuted.copy(alpha = alpha * 0.6f), Color.Transparent),
                 center = offset3,
                 radius = radius * 0.75f,
             ),
