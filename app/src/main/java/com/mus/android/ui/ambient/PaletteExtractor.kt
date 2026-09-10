@@ -68,10 +68,15 @@ class PaletteExtractor @Inject constructor(
     }
 
     private suspend fun loadBitmap(artworkUri: String): Bitmap? {
+        val data: Any = if (artworkUri.startsWith("/")) {
+            java.io.File(artworkUri)
+        } else {
+            artworkUri
+        }
         val request = ImageRequest.Builder(context)
-            .data(Uri.parse(artworkUri))
-            .size(128, 128) // Small bitmap for palette extraction
-            .allowHardware(false) // Palette needs software bitmap
+            .data(data)
+            .size(128, 128) // Small bitmap for fast palette extraction
+            .allowHardware(false) // AndroidX Palette requires software bitmap
             .build()
 
         return when (val result = imageLoader.execute(request)) {
@@ -81,20 +86,28 @@ class PaletteExtractor @Inject constructor(
     }
 
     private suspend fun extractFromPalette(palette: Palette, artworkUri: String): ArtworkColors {
-        val dominantSwatch = palette.dominantSwatch
-        val vibrantSwatch = palette.vibrantSwatch ?: palette.lightVibrantSwatch
-        val mutedSwatch = palette.mutedSwatch ?: palette.darkMutedSwatch
+        // Collect candidate swatches with preference for vivid/rich colors
+        val swatches = palette.swatches.sortedByDescending { it.population }
+        val dominantSwatch = palette.dominantSwatch ?: swatches.firstOrNull()
+        val vibrantSwatch = palette.vibrantSwatch 
+            ?: palette.darkVibrantSwatch 
+            ?: palette.lightVibrantSwatch
+            ?: swatches.getOrNull(1)
+        val mutedSwatch = palette.mutedSwatch 
+            ?: palette.darkMutedSwatch 
+            ?: palette.lightMutedSwatch
+            ?: swatches.getOrNull(2)
 
-        val dominantColor = dominantSwatch?.rgb ?: 0xFF1A1A1A.toInt()
-        val vibrantColor = vibrantSwatch?.rgb
-        val mutedColor = mutedSwatch?.rgb
+        val dominantRgb = dominantSwatch?.rgb ?: 0xFF1E2840.toInt()
+        val vibrantRgb = vibrantSwatch?.rgb ?: dominantRgb
+        val mutedRgb = mutedSwatch?.rgb ?: dominantRgb
 
-        // Adjust colors: avoid too dark or too bright
-        val adjustedDominant = adjustColor(dominantColor)
-        val adjustedVibrant = adjustColor(vibrantColor ?: dominantColor)
-        val adjustedMuted = adjustColor(mutedColor ?: dominantColor)
+        // Adjust colors using HSV to guarantee rich, visible, elegant atmospheric tones
+        val adjustedDominant = adjustAtmosphericColor(dominantRgb, minSat = 0.45f, maxSat = 0.85f, minVal = 0.35f, maxVal = 0.70f)
+        val adjustedVibrant = adjustAtmosphericColor(vibrantRgb, minSat = 0.50f, maxSat = 0.90f, minVal = 0.40f, maxVal = 0.75f)
+        val adjustedMuted = adjustAtmosphericColor(mutedRgb, minSat = 0.35f, maxSat = 0.75f, minVal = 0.28f, maxVal = 0.55f)
 
-        // Cache
+        // Cache in Room
         paletteDao.insert(
             ArtworkPalette(
                 artworkUri = artworkUri,
@@ -115,43 +128,34 @@ class PaletteExtractor @Inject constructor(
     }
 
     /**
-     * Ensures colors aren't too dark (invisible on dark background)
-     * or too bright (reduce readability). Clamp luminance.
+     * Adjusts color in HSV space so it retains the album artwork's authentic hue,
+     * but is guaranteed to have enough saturation and brightness to be visibly atmospheric,
+     * while never blowing out into bright neon or dropping into indistinguishable black.
      */
-    private fun adjustColor(argb: Int): Int {
-        val r = argb.red
-        val g = argb.green
-        val b = argb.blue
-        val luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255.0
+    private fun adjustAtmosphericColor(
+        argb: Int,
+        minSat: Float = 0.45f,
+        maxSat: Float = 0.85f,
+        minVal: Float = 0.35f,
+        maxVal: Float = 0.70f,
+    ): Int {
+        val hsv = FloatArray(3)
+        android.graphics.Color.colorToHSV(argb, hsv)
+        
+        // Boost saturation if too muted/grey so the background has beautiful color depth
+        hsv[1] = hsv[1].coerceIn(minSat, maxSat)
+        // Clamp value/brightness for a rich, dark-mode atmospheric ambient feel
+        hsv[2] = hsv[2].coerceIn(minVal, maxVal)
 
-        // Too dark: lighten slightly
-        if (luminance < 0.15) {
-            val factor = 1.8f
-            return android.graphics.Color.argb(
-                255,
-                (r * factor).toInt().coerceIn(0, 255),
-                (g * factor).toInt().coerceIn(0, 255),
-                (b * factor).toInt().coerceIn(0, 255)
-            )
-        }
-        // Too bright: darken
-        if (luminance > 0.85) {
-            val factor = 0.6f
-            return android.graphics.Color.argb(
-                255,
-                (r * factor).toInt().coerceIn(0, 255),
-                (g * factor).toInt().coerceIn(0, 255),
-                (b * factor).toInt().coerceIn(0, 255)
-            )
-        }
-        return argb
+        return android.graphics.Color.HSVToColor(255, hsv)
     }
 
     companion object {
         val DEFAULT_COLORS = ArtworkColors(
-            dominant = Color(0xFF2A2A2A),
-            vibrant = Color(0xFF3A3A3A),
-            muted = Color(0xFF1A1A1A),
+            dominant = Color(0xFF1E2840), // Deep twilight indigo
+            vibrant = Color(0xFF2E2042),  // Deep atmospheric amethyst
+            muted = Color(0xFF162032),    // Dark midnight slate
         )
     }
 }
+

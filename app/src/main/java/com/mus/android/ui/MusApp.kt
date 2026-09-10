@@ -19,7 +19,6 @@ import com.mus.android.ui.ambient.AmbientGradientBackground
 import com.mus.android.ui.components.MiniPlayer
 import com.mus.android.ui.navigation.MusNavHost
 import com.mus.android.ui.navigation.MusRoute
-import com.mus.android.ui.screens.NowPlayingScreen
 import com.mus.android.ui.screens.QueueSheet
 import com.mus.android.ui.theme.MusColors
 import com.mus.android.ui.viewmodel.NowPlayingViewModel
@@ -34,17 +33,28 @@ fun MusApp(
     val isPlaying by nowPlayingViewModel.isPlaying.collectAsState()
     val artworkColors by nowPlayingViewModel.artworkColors.collectAsState()
 
-    var showNowPlaying by remember { mutableStateOf(false) }
     var showQueue by remember { mutableStateOf(false) }
 
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = navBackStackEntry?.destination?.route
+    val isNowPlayingRoute = currentRoute == MusRoute.NowPlaying.route
+    val isMainTab = currentRoute in listOf(MusRoute.Home.route, MusRoute.Search.route, MusRoute.Library.route)
+
+    // Dynamic ambient background intensity:
+    // Full atmospheric lighting (0.95f) on Now Playing, elegant subtle glow (0.55f) across other screens
+    val ambientIntensity = if (isNowPlayingRoute) {
+        0.95f
+    } else if (currentTrack != null) {
+        0.55f
+    } else {
+        0.30f
+    }
 
     Box(modifier = modifier.fillMaxSize().background(MusColors.Background)) {
-        // Global ambient background — subtle flowing colors derived from current artwork
+        // Global ambient background — softly glowing colors derived from current album artwork
         AmbientGradientBackground(
             colors = artworkColors,
-            intensity = 0.12f,
+            intensity = ambientIntensity,
             modifier = Modifier.fillMaxSize(),
         )
 
@@ -54,13 +64,15 @@ fun MusApp(
                     navController = navController,
                     onTrackClick = { track, queue ->
                         nowPlayingViewModel.playTrackWithQueue(track, queue)
+                        navController.navigate(MusRoute.NowPlaying.route)
                     },
+                    onQueueClick = { showQueue = true },
                 )
             }
 
-            // Mini-player (self-contained position observer)
+            // Mini-player — visible when music is loaded and not on full Now Playing screen
             AnimatedVisibility(
-                visible = currentTrack != null && !showNowPlaying,
+                visible = currentTrack != null && !isNowPlayingRoute,
                 enter = slideInVertically { it } + fadeIn(),
                 exit = slideOutVertically { it } + fadeOut(),
             ) {
@@ -69,65 +81,55 @@ fun MusApp(
                         track = track,
                         isPlaying = isPlaying,
                         viewModel = nowPlayingViewModel,
-                        onTap = { showNowPlaying = true },
+                        onTap = { navController.navigate(MusRoute.NowPlaying.route) },
                         onPlayPause = { nowPlayingViewModel.togglePlayPause() },
                         onSkipNext = { nowPlayingViewModel.skipNext() },
                     )
                 }
             }
 
-            // Bottom navigation
-            NavigationBar(
-                containerColor = MusColors.Surface,
-                contentColor = MusColors.OnBackground,
-                tonalElevation = 0.dp,
-            ) {
-                val items = listOf(
-                    Triple(MusRoute.Home.route, Icons.Rounded.Home, "Home"),
-                    Triple(MusRoute.Search.route, Icons.Rounded.Search, "Search"),
-                    Triple(MusRoute.Library.route, Icons.Rounded.LibraryMusic, "Library"),
-                )
-                items.forEach { (route, icon, label) ->
-                    val selected = currentRoute == route
-                    NavigationBarItem(
-                        selected = selected,
-                        onClick = {
-                            if (currentRoute != route) {
-                                navController.navigate(route) {
-                                    popUpTo(MusRoute.Home.route) { saveState = true }
-                                    launchSingleTop = true
-                                    restoreState = true
-                                }
-                            }
-                        },
-                        icon = {
-                            Icon(icon, contentDescription = label, modifier = Modifier.size(22.dp))
-                        },
-                        label = {
-                            Text(label, style = MaterialTheme.typography.labelSmall)
-                        },
-                        colors = NavigationBarItemDefaults.colors(
-                            selectedIconColor = MusColors.OnBackground,
-                            selectedTextColor = MusColors.OnBackground,
-                            unselectedIconColor = MusColors.OnBackgroundTertiary,
-                            unselectedTextColor = MusColors.OnBackgroundTertiary,
-                            indicatorColor = MusColors.SurfaceVariant,
-                        ),
+            // Bottom navigation — visible on primary navigation tabs
+            if (isMainTab) {
+                NavigationBar(
+                    containerColor = MusColors.Surface.copy(alpha = 0.85f),
+                    contentColor = MusColors.OnBackground,
+                    tonalElevation = 0.dp,
+                ) {
+                    val items = listOf(
+                        Triple(MusRoute.Home.route, Icons.Rounded.Home, "Home"),
+                        Triple(MusRoute.Search.route, Icons.Rounded.Search, "Search"),
+                        Triple(MusRoute.Library.route, Icons.Rounded.LibraryMusic, "Library"),
                     )
+                    items.forEach { (route, icon, label) ->
+                        val selected = currentRoute == route
+                        NavigationBarItem(
+                            selected = selected,
+                            onClick = {
+                                if (currentRoute != route) {
+                                    navController.navigate(route) {
+                                        popUpTo(MusRoute.Home.route) { saveState = true }
+                                        launchSingleTop = true
+                                        restoreState = true
+                                    }
+                                }
+                            },
+                            icon = {
+                                Icon(icon, contentDescription = label, modifier = Modifier.size(22.dp))
+                            },
+                            label = {
+                                Text(label, style = MaterialTheme.typography.labelSmall)
+                            },
+                            colors = NavigationBarItemDefaults.colors(
+                                selectedIconColor = MusColors.OnBackground,
+                                selectedTextColor = MusColors.OnBackground,
+                                unselectedIconColor = MusColors.OnBackgroundTertiary,
+                                unselectedTextColor = MusColors.OnBackgroundTertiary,
+                                indicatorColor = MusColors.SurfaceVariant,
+                            ),
+                        )
+                    }
                 }
             }
-        }
-
-        // Now Playing overlay
-        AnimatedVisibility(
-            visible = showNowPlaying,
-            enter = slideInVertically { it },
-            exit = slideOutVertically { it },
-        ) {
-            NowPlayingScreen(
-                onBack = { showNowPlaying = false },
-                onQueueClick = { showQueue = true },
-            )
         }
 
         if (showQueue) {
@@ -135,3 +137,4 @@ fun MusApp(
         }
     }
 }
+

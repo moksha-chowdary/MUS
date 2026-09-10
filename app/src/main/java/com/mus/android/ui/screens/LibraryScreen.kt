@@ -23,6 +23,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -65,7 +66,7 @@ fun LibraryScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(MusColors.Background)
+            .background(Color.Transparent)
     ) {
         Spacer(Modifier.height(Spacing.xxxl))
 
@@ -81,7 +82,7 @@ fun LibraryScreen(
         // Tab row
         ScrollableTabRow(
             selectedTabIndex = selectedTab,
-            containerColor = MusColors.Background,
+            containerColor = Color.Transparent,
             contentColor = MusColors.OnBackground,
             edgePadding = Spacing.base,
             indicator = { tabPositions ->

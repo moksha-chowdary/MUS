@@ -68,67 +68,80 @@ fun AmbientGradientBackground(
         val w = size.width
         val h = size.height
 
-        // Base dark background
-        drawRect(Color(0xFF0A0A0A))
+        // Base atmospheric dark tone
+        drawRect(Color(0xFF090A0E))
 
         val radian1 = Math.toRadians(driftPhase.toDouble())
         val radian2 = Math.toRadians(driftPhase2.toDouble())
 
-        // Gradient blob 1 — dominant color, upper area
+        // Blob 1 — Dominant color, sweeps upper and middle-left
         val offset1 = Offset(
-            x = w * (0.3f + 0.15f * cos(radian1).toFloat()),
-            y = h * (0.25f + 0.1f * sin(radian1 * 0.7).toFloat())
+            x = w * (0.35f + 0.20f * cos(radian1).toFloat()),
+            y = h * (0.28f + 0.15f * sin(radian1 * 0.8).toFloat())
         )
 
-        // Gradient blob 2 — vibrant color, center-right
+        // Blob 2 — Vibrant color, sweeps middle-right and upper
         val offset2 = Offset(
-            x = w * (0.7f + 0.12f * sin(radian2).toFloat()),
-            y = h * (0.5f + 0.15f * cos(radian2 * 0.5).toFloat())
+            x = w * (0.68f + 0.18f * sin(radian2).toFloat()),
+            y = h * (0.45f + 0.18f * cos(radian2 * 0.6).toFloat())
         )
 
-        // Gradient blob 3 — muted color, bottom-left
+        // Blob 3 — Muted/tertiary color, sweeps lower-center
         val offset3 = Offset(
-            x = w * (0.4f + 0.1f * sin(radian1 * 1.3).toFloat()),
-            y = h * (0.75f + 0.08f * cos(radian2 * 0.8).toFloat())
+            x = w * (0.45f + 0.15f * sin(radian1 * 1.2).toFloat()),
+            y = h * (0.72f + 0.12f * cos(radian2 * 0.9).toFloat())
         )
 
-        val radius = w * 0.7f
+        val radius1 = w * 0.85f
+        val radius2 = w * 0.80f
+        val radius3 = w * 0.75f
 
-        // Draw radial gradients with intensity control
-        val alpha = (0.45f * intensity).coerceIn(0f, 0.5f)
+        // Alpha scales with intensity: NowPlaying has full glow (~0.75), main screens have elegant subtle glow (~0.45)
+        val alpha1 = (0.75f * intensity).coerceIn(0.15f, 0.85f)
+        val alpha2 = (0.65f * intensity).coerceIn(0.12f, 0.75f)
+        val alpha3 = (0.55f * intensity).coerceIn(0.10f, 0.65f)
 
+        // Draw flowing radial gradient meshes
         drawCircle(
             brush = Brush.radialGradient(
-                colors = listOf<Color>(animatedDominant.copy(alpha = alpha), Color.Transparent),
+                colors = listOf(animatedDominant.copy(alpha = alpha1), Color.Transparent),
                 center = offset1,
-                radius = radius,
+                radius = radius1,
             ),
-            radius = radius,
+            radius = radius1,
             center = offset1,
         )
 
         drawCircle(
             brush = Brush.radialGradient(
-                colors = listOf<Color>(animatedVibrant.copy(alpha = alpha * 0.8f), Color.Transparent),
+                colors = listOf(animatedVibrant.copy(alpha = alpha2), Color.Transparent),
                 center = offset2,
-                radius = radius * 0.85f,
+                radius = radius2,
             ),
-            radius = radius * 0.85f,
+            radius = radius2,
             center = offset2,
         )
 
         drawCircle(
             brush = Brush.radialGradient(
-                colors = listOf<Color>(animatedMuted.copy(alpha = alpha * 0.6f), Color.Transparent),
+                colors = listOf(animatedMuted.copy(alpha = alpha3), Color.Transparent),
                 center = offset3,
-                radius = radius * 0.75f,
+                radius = radius3,
             ),
-            radius = radius * 0.75f,
+            radius = radius3,
             center = offset3,
         )
 
-        // Dark scrim for readability — stronger when colors are brighter
-        drawRect(Color.Black.copy(alpha = 0.35f * intensity.coerceAtLeast(0.3f)))
+        // Subtle dark vertical gradient scrim to preserve high-contrast text readability at top and bottom
+        drawRect(
+            brush = Brush.verticalGradient(
+                colors = listOf(
+                    Color.Black.copy(alpha = 0.20f),
+                    Color.Transparent,
+                    Color.Black.copy(alpha = 0.35f),
+                )
+            )
+        )
     }
 }
 

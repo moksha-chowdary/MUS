@@ -19,6 +19,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -35,6 +36,7 @@ import com.mus.android.ui.viewmodel.AlbumViewModel
 @Composable
 fun AlbumScreen(
     onBack: () -> Unit,
+    onTrackSelected: (() -> Unit)? = null,
     viewModel: AlbumViewModel = hiltViewModel(),
 ) {
     val album by viewModel.album.collectAsState()
@@ -44,7 +46,7 @@ fun AlbumScreen(
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
-            .background(MusColors.Background),
+            .background(Color.Transparent),
         contentPadding = PaddingValues(bottom = 120.dp),
     ) {
         item {
@@ -113,7 +115,10 @@ fun AlbumScreen(
                     horizontalArrangement = Arrangement.spacedBy(Spacing.md),
                 ) {
                     Button(
-                        onClick = { viewModel.playAll(shuffle = false) },
+                        onClick = { 
+                            viewModel.playAll(shuffle = false)
+                            onTrackSelected?.invoke()
+                        },
                         colors = ButtonDefaults.buttonColors(
                             containerColor = MusColors.OnBackground,
                             contentColor = MusColors.Background,
@@ -125,7 +130,10 @@ fun AlbumScreen(
                         Text("Play", style = MaterialTheme.typography.labelLarge)
                     }
                     OutlinedButton(
-                        onClick = { viewModel.playAll(shuffle = true) },
+                        onClick = { 
+                            viewModel.playAll(shuffle = true)
+                            onTrackSelected?.invoke()
+                        },
                         colors = ButtonDefaults.outlinedButtonColors(
                             contentColor = MusColors.OnBackground,
                         ),
@@ -145,7 +153,10 @@ fun AlbumScreen(
             AnimatedListItem(index = index) {
                 TrackRow(
                     track = track,
-                    onClick = { viewModel.playTrack(track) },
+                    onClick = { 
+                        viewModel.playTrack(track)
+                        onTrackSelected?.invoke()
+                    },
                     onFavoriteToggle = { viewModel.toggleFavorite(track.id) },
                     onMoreClick = { selectedTrackForMenu = track },
                     showArtwork = false,

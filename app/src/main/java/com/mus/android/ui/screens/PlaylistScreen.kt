@@ -18,6 +18,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -34,6 +35,7 @@ import com.mus.android.ui.viewmodel.PlaylistViewModel
 @Composable
 fun PlaylistScreen(
     onBack: () -> Unit,
+    onTrackSelected: (() -> Unit)? = null,
     viewModel: PlaylistViewModel = hiltViewModel(),
 ) {
     val context = LocalContext.current
@@ -61,7 +63,7 @@ fun PlaylistScreen(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(MusColors.Background),
+            .background(Color.Transparent),
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
             // Top App Bar
@@ -270,6 +272,7 @@ fun PlaylistScreen(
                                     viewModel.toggleTrackSelection(track.id)
                                 } else {
                                     viewModel.playTrack(track)
+                                    onTrackSelected?.invoke()
                                 }
                             },
                             onLongClick = {

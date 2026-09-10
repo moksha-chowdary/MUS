@@ -31,11 +31,13 @@ import com.mus.android.ui.theme.Spacing
 import com.mus.android.ui.theme.TimestampStyle
 import com.mus.android.ui.viewmodel.NowPlayingViewModel
 
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.material.icons.automirrored.rounded.PlaylistAdd
 import com.mus.android.ui.components.DepthCarousel
 
@@ -93,7 +95,13 @@ fun NowPlayingScreen(
 
     val scrollState = rememberScrollState()
 
-    Box(modifier = Modifier.fillMaxSize()) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .pointerInput(Unit) {
+                detectTapGestures { /* Consume all clicks to completely isolate underlying screen */ }
+            }
+    ) {
         // Ambient gradient background — full intensity
         AmbientGradientBackground(
             colors = artworkColors,
@@ -142,25 +150,23 @@ fun NowPlayingScreen(
 
             Spacer(Modifier.height(Spacing.xl))
 
-            // Artwork — HorizontalPager swipe between tracks with parallax
+            // Artwork — HorizontalPager swipe between tracks with physical feel
             HorizontalPager(
                 state = pagerState,
                 modifier = Modifier
                     .fillMaxWidth()
                     .aspectRatio(1f),
-                contentPadding = PaddingValues(horizontal = 16.dp),
+                contentPadding = PaddingValues(horizontal = 20.dp),
                 pageSpacing = 16.dp,
             ) { page ->
                 val pageTrack = queue.getOrNull(page) ?: track
                 val pageOffset = (pagerState.currentPage - page) + pagerState.currentPageOffsetFraction
-                val scale = 1f - (kotlin.math.abs(pageOffset) * 0.08f).coerceIn(0f, 0.15f)
-                val rotation = (pageOffset * -3f).coerceIn(-6f, 6f)
-                val alpha = 1f - (kotlin.math.abs(pageOffset) * 0.4f).coerceIn(0f, 0.6f)
+                val absOffset = kotlin.math.abs(pageOffset).coerceIn(0f, 1f)
+                val scale = 1f - (absOffset * 0.10f)
+                val rotation = (pageOffset * -2.5f).coerceIn(-5f, 5f)
+                val alpha = 1f - (absOffset * 0.35f)
 
-                AsyncImage(
-                    model = pageTrack?.artworkUri,
-                    contentDescription = pageTrack?.title,
-                    contentScale = ContentScale.Crop,
+                Box(
                     modifier = Modifier
                         .fillMaxSize()
                         .graphicsLayer {
@@ -169,9 +175,25 @@ fun NowPlayingScreen(
                             rotationZ = rotation
                             this.alpha = alpha
                         }
-                        .clip(RoundedCornerShape(16.dp))
-                        .background(MusColors.SurfaceVariant)
-                )
+                        .clip(RoundedCornerShape(20.dp))
+                        .background(MusColors.SurfaceVariant),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Album,
+                        contentDescription = null,
+                        tint = MusColors.OnBackgroundTertiary.copy(alpha = 0.5f),
+                        modifier = Modifier.size(80.dp)
+                    )
+                    if (!pageTrack?.artworkUri.isNullOrBlank()) {
+                        AsyncImage(
+                            model = pageTrack?.artworkUri,
+                            contentDescription = pageTrack?.title,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
+                }
             }
 
             Spacer(Modifier.height(Spacing.xl))
