@@ -234,18 +234,36 @@ class WaveformTest {
     fun testDifferentAudioPatternsProduceDistinctWaveforms() {
         val sampleCount = 160
 
-        // Song A: upbeat fast phrase movement
+        // Song A: upbeat fast electronic track with build-up, drop and transients
         val songAWaveform = List(sampleCount) { i ->
-            (0.8f * sin((i * 2.0 * PI) / 10.0)).toFloat()
+            val env = 0.2f + 0.6f * (i.toFloat() / sampleCount)
+            val h1 = sin((i * 2.0 * PI) / 9.0)
+            val h2 = 0.3 * sin((i * 2.0 * PI) / 4.7)
+            ((h1 + h2) * env).toFloat().coerceIn(-0.85f, 0.85f)
         }
 
-        // Song B: slow ballad phrase movement
+        // Song B: slow acoustic ballad with gentle phrasing and varying dynamics
         val songBWaveform = List(sampleCount) { i ->
-            (0.5f * sin((i * 2.0 * PI) / 28.0)).toFloat()
+            val env = 0.7f - 0.4f * (i.toFloat() / sampleCount)
+            val h1 = sin((i * 2.0 * PI) / 23.0)
+            val h2 = 0.25 * sin((i * 2.0 * PI) / 11.3)
+            ((h1 + h2) * env).toFloat().coerceIn(-0.85f, 0.85f)
         }
 
         assertNotEquals(songAWaveform, songBWaveform)
         assertTrue(WaveformExtractor.isValidWaveform(songAWaveform))
         assertTrue(WaveformExtractor.isValidWaveform(songBWaveform))
+    }
+
+    @Test
+    fun testLegacyPeriodicSineWaveIsRejected() {
+        // Construct the old synthetic sine wave with period 12 (zero crossings every 6 samples)
+        val syntheticSine = List(160) { i ->
+            (0.85f * sin((i * 2.0 * PI) / 12.0)).toFloat()
+        }
+        assertFalse(
+            "Legacy periodic sine wave with constant interval 6 must be rejected",
+            WaveformExtractor.isValidWaveform(syntheticSine)
+        )
     }
 }

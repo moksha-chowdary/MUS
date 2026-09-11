@@ -42,6 +42,8 @@ class NowPlayingViewModel @Inject constructor(
         // When track changes, extract waveform and palette
         viewModelScope.launch {
             currentTrack.filterNotNull().distinctUntilChangedBy { it.id }.collect { track ->
+                // Clear old waveform immediately so no stale waveform from previous song is displayed
+                _waveformData.value = emptyList()
                 // Extract waveform
                 launch {
                     val waveform = repository.getWaveform(track.id, track.uri)

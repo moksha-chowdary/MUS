@@ -151,16 +151,6 @@ fun WaveformSlider(
                         cap = StrokeCap.Round,
                     )
 
-                    // Subtle baseline under played region as central reference axis
-                    if (revealX > 1f) {
-                        drawLine(
-                            color = baselineColor.copy(alpha = baselineColor.alpha * 0.40f),
-                            start = Offset(0f, centerY),
-                            end = Offset(revealX, centerY),
-                            strokeWidth = baselineStrokeWidthPx * 0.75f,
-                            cap = StrokeCap.Round,
-                        )
-                    }
 
                     // ── 2. BIPOLAR WAVEFORM (left of playback position) ─────────────────────────
                     // Revealed strictly up to revealX; everything beyond remains the flat baseline.

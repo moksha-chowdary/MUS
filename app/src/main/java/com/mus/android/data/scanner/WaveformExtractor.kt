@@ -73,6 +73,18 @@ class WaveformExtractor @Inject constructor(
             }
             if (zeroCrossings < 2) return false
 
+            // Reject legacy synthetic periodic waves where values repeat identically across fixed periods (e.g. period 12)
+            if (peaks.size >= 36) {
+                for (period in 6..24) {
+                    val matchCount = (0 until peaks.size - period).count {
+                        abs(peaks[it + period] - peaks[it]) < 0.001f
+                    }
+                    if (matchCount > (peaks.size - period) * 0.75) {
+                        return false // Periodic synthetic wave
+                    }
+                }
+            }
+
             return true
         }
     }
@@ -211,13 +223,12 @@ class WaveformExtractor @Inject constructor(
     }
 
     /**
-     * Decodes PCM audio and extracts a single organic bipolar waveform:
+     * Decodes PCM audio and extracts a single organic bipolar waveform derived 100% from the audio file:
      * - Divides track duration into SAMPLE_COUNT (160) windows.
-     * - In each window, measures authentic audio magnitude (RMS + peak envelope) from PCM audio.
-     * - Displaces values above and below the center baseline following the audio's low-frequency
-     *   movement and musical phrasing, naturally traversing: above → center → below → center → above.
-     * - Applies a 3-point smoothing kernel to eliminate harsh single-sample noise while preserving
-     *   authentic dynamic peaks and drops.
+     * - Removes DC bias and runs a 2-pole low-pass filter on PCM audio to track authentic low-frequency displacement.
+     * - Measures authentic dynamic loudness envelope (Peak + RMS).
+     * - Modulates magnitude by real audio displacement with tanh saturation. Zero synthetic sine waves!
+     * - Applies a 3-point smoothing filter [0.15, 0.70, 0.15] to eliminate single-sample noise spikes.
      * - Normalizes to ±0.85 with dynamic headroom.
      */
     private fun extractBipolarAudioWaveform(trackId: Long, uriString: String, startTimeMs: Long): List<Float>? {
@@ -255,13 +266,21 @@ class WaveformExtractor @Inject constructor(
             codec.configure(format, null, null, 0)
             codec.start()
 
+            val sampleRateFloat = sampleRate.toFloat()
+            val alphaDc = (2.0 * PI * 0.05 / sampleRateFloat).toFloat().coerceIn(0.000001f, 0.001f)
+            val fc = 0.35f
+            val alphaLp = (2.0 * PI * fc / sampleRateFloat).toFloat().coerceIn(0.00001f, 0.01f)
+
+            var dcEstimate = 0f
+            var lp1 = 0f
+            var lp2 = 0f
+
             // Accumulate window statistics from real PCM audio
             val windowMagnitudes = mutableListOf<Float>()
-            val windowPolarityBias = mutableListOf<Float>()
+            val windowDisplacements = mutableListOf<Float>()
 
             var windowSumSquares = 0.0
             var windowPeakAbs = 0f
-            var windowSignedSum = 0.0
             var windowSampleCount = 0L
             var isEos = false
             val bufferInfo = MediaCodec.BufferInfo()
@@ -302,27 +321,33 @@ class WaveformExtractor @Inject constructor(
                             for (i in 0 until count) {
                                 val rawSample = shortBuffer.get()
                                 val norm = rawSample.toFloat() / Short.MAX_VALUE
-                                val absNorm = abs(norm)
 
-                                windowSumSquares += (norm * norm)
-                                windowSignedSum += norm
-                                if (absNorm > windowPeakAbs) {
-                                    windowPeakAbs = absNorm
+                                // 1. DC removal
+                                dcEstimate += alphaDc * (norm - dcEstimate)
+                                val ac = norm - dcEstimate
+                                val absAc = abs(ac)
+
+                                // 2. 2-pole low-pass filter tracking authentic musical phrasing
+                                lp1 += alphaLp * (ac - lp1)
+                                lp2 += alphaLp * (lp1 - lp2)
+
+                                // 3. Window energy accumulation
+                                windowSumSquares += (ac * ac)
+                                if (absAc > windowPeakAbs) {
+                                    windowPeakAbs = absAc
                                 }
                                 windowSampleCount++
 
                                 if (windowSampleCount >= samplesPerWindow) {
                                     val rms = sqrt(windowSumSquares / windowSampleCount).toFloat()
                                     // Combine peak and RMS for a natural dynamic volume envelope
-                                    val mag = (windowPeakAbs * 0.70f + rms * 0.30f).coerceIn(0f, 1f)
-                                    val bias = (windowSignedSum / windowSampleCount).toFloat()
+                                    val mag = (windowPeakAbs * 0.65f + rms * 0.35f).coerceIn(0f, 1f)
 
                                     windowMagnitudes.add(mag)
-                                    windowPolarityBias.add(bias)
+                                    windowDisplacements.add(lp2)
 
                                     windowSumSquares = 0.0
                                     windowPeakAbs = 0f
-                                    windowSignedSum = 0.0
                                     windowSampleCount = 0
 
                                     if (windowMagnitudes.size >= SAMPLE_COUNT) break
@@ -334,10 +359,9 @@ class WaveformExtractor @Inject constructor(
                         if (bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
                             if (windowSampleCount > 0 && windowMagnitudes.size < SAMPLE_COUNT) {
                                 val rms = sqrt(windowSumSquares / windowSampleCount).toFloat()
-                                val mag = (windowPeakAbs * 0.70f + rms * 0.30f).coerceIn(0f, 1f)
-                                val bias = (windowSignedSum / windowSampleCount).toFloat()
+                                val mag = (windowPeakAbs * 0.65f + rms * 0.35f).coerceIn(0f, 1f)
                                 windowMagnitudes.add(mag)
-                                windowPolarityBias.add(bias)
+                                windowDisplacements.add(lp2)
                             }
                             break
                         }
@@ -352,39 +376,31 @@ class WaveformExtractor @Inject constructor(
 
             // Pad up to SAMPLE_COUNT if track ended slightly early
             while (windowMagnitudes.size < SAMPLE_COUNT) {
-                windowMagnitudes.add(windowMagnitudes.lastOrNull() ?: 0.1f)
-                windowPolarityBias.add(0f)
+                windowMagnitudes.add(windowMagnitudes.lastOrNull() ?: 0.05f)
+                windowDisplacements.add(windowDisplacements.lastOrNull() ?: 0f)
             }
 
-            // Generate organic signed bipolar flow:
-            // The wave naturally traverses above and below center across musical phrases (~4-8 sec per wave),
-            // while peak height and trough depth are 100% determined by the real audio magnitude.
+            // Combine authentic audio displacement and loudness envelope:
+            // Zero synthetic sine wave. The wave is 100% determined by the audio file.
+            val maxDisp = windowDisplacements.maxOfOrNull { abs(it) } ?: 0.0001f
             val rawBipolar = ArrayList<Float>(SAMPLE_COUNT)
-            val phraseCycleLength = 12.0 // ~12 points per musical oscillation cycle
 
             for (i in 0 until SAMPLE_COUNT) {
                 val mag = windowMagnitudes[i]
-                val phase = sin((i * 2.0 * PI) / phraseCycleLength).toFloat()
-                val bias = windowPolarityBias[i]
-
-                // Combine phrase phase with authentic low-frequency bias
-                val signFactor = if (abs(bias) > 0.001f) {
-                    phase * 0.75f + (if (bias >= 0f) 0.25f else -0.25f)
-                } else {
-                    phase
-                }
-
-                val signedValue = mag * signFactor.coerceIn(-1f, 1f)
+                val disp = windowDisplacements[i]
+                val dispNorm = if (maxDisp > 0f) (disp / maxDisp).coerceIn(-1f, 1f) else 0f
+                val signFactor = kotlin.math.tanh(dispNorm * 2.2f)
+                val signedValue = mag * signFactor
                 rawBipolar.add(signedValue)
             }
 
-            // Apply 3-point smoothing filter [0.2, 0.6, 0.2] to guarantee organic flow without noise spikes
+            // Apply 3-point smoothing filter [0.15, 0.70, 0.15] to eliminate single-sample noise spikes
             val smoothed = ArrayList<Float>(SAMPLE_COUNT)
             for (i in 0 until SAMPLE_COUNT) {
                 val prev = rawBipolar.getOrElse(i - 1) { rawBipolar[i] }
                 val curr = rawBipolar[i]
                 val next = rawBipolar.getOrElse(i + 1) { rawBipolar[i] }
-                val smoothVal = (0.20f * prev) + (0.60f * curr) + (0.20f * next)
+                val smoothVal = (0.15f * prev) + (0.70f * curr) + (0.15f * next)
                 smoothed.add(smoothVal)
             }
 
