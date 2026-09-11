@@ -31,7 +31,6 @@ import com.mus.android.ui.theme.Spacing
 import com.mus.android.ui.theme.TimestampStyle
 import com.mus.android.ui.viewmodel.NowPlayingViewModel
 
-import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
@@ -98,15 +97,22 @@ fun NowPlayingScreen(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            // Consume ALL pointer events so the screen beneath never receives any input.
-            // detectTapGestures only blocked taps — swipes/drags were still passing through.
+            // Absorb pointer events that were NOT consumed by our children (pager, buttons, etc.)
+            // so they cannot pass through to the navigation destination underneath.
+            //
+            // CRITICAL: We use PointerEventPass.Final (NOT Initial).
+            // Initial = top-down, runs BEFORE children → would block HorizontalPager + all buttons.
+            // Final   = runs AFTER children have already handled their events → children work
+            //           normally; we only catch the leftovers and prevent screen-behind touch-through.
             .pointerInput(Unit) {
                 awaitPointerEventScope {
                     while (true) {
                         val event = awaitPointerEvent(
-                            pass = androidx.compose.ui.input.pointer.PointerEventPass.Initial
+                            pass = androidx.compose.ui.input.pointer.PointerEventPass.Final
                         )
-                        event.changes.forEach { it.consume() }
+                        event.changes.forEach { change ->
+                            if (!change.isConsumed) change.consume()
+                        }
                     }
                 }
             }
