@@ -239,7 +239,7 @@ fun LibraryScreen(
                     horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
                     verticalArrangement = Arrangement.spacedBy(Spacing.sm),
                 ) {
-                    items(albums) { album ->
+                    items(albums, key = { it.id }) { album ->
                         AlbumCard(
                             title = album.title,
                             artist = album.artist,
@@ -253,7 +253,7 @@ fun LibraryScreen(
             2 -> {
                 // Artists
                 LazyColumn(contentPadding = PaddingValues(bottom = 120.dp)) {
-                    items(artists) { artist ->
+                    items(artists, key = { it.id }) { artist ->
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -341,7 +341,7 @@ fun LibraryScreen(
                         }
                     } else {
                         LazyColumn(contentPadding = PaddingValues(bottom = 120.dp)) {
-                            items(filteredTracks) { track ->
+                            items(filteredTracks, key = { it.id }) { track ->
                                 TrackRow(
                                     track = track,
                                     onClick = { onTrackClick(track, filteredTracks) },
@@ -369,7 +369,7 @@ fun LibraryScreen(
                     }
                 } else {
                     LazyColumn(contentPadding = PaddingValues(bottom = 120.dp)) {
-                        items(favorites) { track ->
+                        items(favorites, key = { it.id }) { track ->
                             TrackRow(
                                 track = track,
                                 onClick = { onTrackClick(track, favorites) },

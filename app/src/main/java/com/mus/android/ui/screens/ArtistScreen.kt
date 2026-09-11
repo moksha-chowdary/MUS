@@ -132,7 +132,7 @@ fun ArtistScreen(
                     contentPadding = PaddingValues(horizontal = Spacing.md),
                     horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
                 ) {
-                    items(albums) { album ->
+                    items(albums, key = { it.id }) { album ->
                         AlbumCard(
                             title = album.title,
                             artist = album.artist,
@@ -155,7 +155,7 @@ fun ArtistScreen(
             )
             Spacer(Modifier.height(Spacing.sm))
         }
-        items(tracks) { track ->
+        items(tracks, key = { it.id }) { track ->
             TrackRow(
                 track = track,
                 onClick = { viewModel.playTrack(track) },

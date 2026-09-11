@@ -34,8 +34,7 @@ import com.mus.android.ui.viewmodel.NowPlayingViewModel
  * - Title + artist
  * - Play/pause morph button
  * - Skip next
- * - Hairline progress underline
- * - Self-contained high-frequency position collection (avoids root recomposition)
+ * - Isolated hairline progress underline (prevents recomposition of parent and row on playback ticks)
  */
 @Composable
 fun MiniPlayer(
@@ -48,9 +47,6 @@ fun MiniPlayer(
     viewModel: NowPlayingViewModel = hiltViewModel(),
     overrideProgress: Float? = null,
 ) {
-    val position by viewModel.position.collectAsState()
-    val duration by viewModel.duration.collectAsState()
-    val progress = overrideProgress ?: if (duration > 0) (position.toFloat() / duration.toFloat()).coerceIn(0f, 1f) else 0f
     // Scale bounce on play/pause
     var bouncing by remember { mutableStateOf(false) }
     val scale by animateFloatAsState(
@@ -132,19 +128,39 @@ fun MiniPlayer(
             }
         }
 
-        // Hairline progress underline
+        // Isolated hairline progress underline — updates at high frequency without recomposing the MiniPlayer row
+        MiniPlayerProgressBar(
+            viewModel = viewModel,
+            overrideProgress = overrideProgress,
+        )
+    }
+}
+
+/**
+ * Isolated progress bar composable: high-frequency position collection is confined exclusively
+ * to this tiny composable boundary.
+ */
+@Composable
+private fun MiniPlayerProgressBar(
+    viewModel: NowPlayingViewModel,
+    overrideProgress: Float? = null,
+    modifier: Modifier = Modifier,
+) {
+    val position by viewModel.position.collectAsState()
+    val duration by viewModel.duration.collectAsState()
+    val progress = overrideProgress ?: if (duration > 0) (position.toFloat() / duration.toFloat()).coerceIn(0f, 1f) else 0f
+
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .height(2.dp)
+            .background(MusColors.Divider)
+    ) {
         Box(
             modifier = Modifier
-                .fillMaxWidth()
-                .height(2.dp)
-                .background(MusColors.Divider)
-        ) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth(progress.coerceIn(0f, 1f))
-                    .fillMaxHeight()
-                    .background(MusColors.OnBackground.copy(alpha = 0.6f))
-            )
-        }
+                .fillMaxWidth(progress.coerceIn(0f, 1f))
+                .fillMaxHeight()
+                .background(MusColors.OnBackground.copy(alpha = 0.6f))
+        )
     }
 }

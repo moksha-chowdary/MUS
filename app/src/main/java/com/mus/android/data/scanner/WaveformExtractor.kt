@@ -52,10 +52,11 @@ class WaveformExtractor @Inject constructor(
             if (cached.status == WaveformStatus.EXTRACTING) return null // In progress
             if (cached.status == WaveformStatus.READY) {
                 val peaks = parsePeaks(cached.peaks)
-                // Detect stale magnitude-only (all-positive) entries from old extractor builds.
-                // If every sample is >= 0, it was extracted without sign preservation — re-extract.
-                if (peaks.isNotEmpty() && peaks.all { it >= 0f }) {
-                    // Invalidate so we re-extract with proper signed data
+                // Detect stale unipolar (all-positive or all-negative) entries from old extractor builds.
+                val hasPositive = peaks.any { it > 0.05f }
+                val hasNegative = peaks.any { it < -0.05f }
+                if (!hasPositive || !hasNegative) {
+                    // Invalidate so we re-extract with proper bipolar signed data
                     waveformDao.insert(
                         WaveformData(
                             trackId = trackId,
@@ -136,15 +137,13 @@ class WaveformExtractor @Inject constructor(
     }
 
     /**
-     * Decodes the audio file and extracts SIGNED amplitude peaks.
+     * Decodes the audio file and extracts BIPOLAR amplitude peaks.
      *
-     * Each bucket collects the sample with the largest absolute value and preserves its sign.
-     * This gives the "dominant direction" of each window which naturally alternates positive
-     * and negative, producing a single waveform that traverses both sides of the baseline.
-     *
-     * After collection, peaks are normalised so the track's max absolute value maps to ±1.
-     * Gentle soft-normalisation prevents very quiet tracks from appearing flat while preserving
-     * relative amplitude differences between sections (loud chorus vs quiet verse).
+     * Divides audio into 100 windows. For each window, extracts the genuine positive peak
+     * (+P_k >= 0) and genuine negative peak (-N_k <= 0) from actual PCM samples.
+     * Storing positive peaks at even indices and negative peaks at odd indices creates
+     * one continuous waveform path that naturally oscillates above and below the baseline,
+     * directly reflecting the real dynamics, quiet sections, loud choruses, and transients.
      */
     private fun extractSignedPeaks(uri: Uri): List<Float>? {
         val extractor = MediaExtractor()
@@ -168,24 +167,24 @@ class WaveformExtractor @Inject constructor(
 
             if (duration <= 0) return null
 
-            // Total PCM samples expected
+            // We produce SAMPLE_COUNT (200) points by analyzing 100 windows (pos + neg per window)
+            val windowCount = SAMPLE_COUNT / 2
             val totalSamples = (sampleRate.toLong() * channels * duration) / 1_000_000L
-            val samplesPerBucket = max(1L, totalSamples / SAMPLE_COUNT)
+            val samplesPerWindow = max(1L, totalSamples / windowCount)
 
             val codec = MediaCodec.createDecoderByType(mime)
             codec.configure(format, null, null, 0)
             codec.start()
 
-            val peaks = mutableListOf<Float>()
-            // Track the signed peak per bucket: the sample with largest |value|, sign preserved
-            var bucketSignedPeak = 0f
-            var bucketAbsMax = 0f
-            var bucketSampleCount = 0L
+            val rawPeaks = mutableListOf<Float>()
+            var windowMaxPositive = 0f
+            var windowMaxNegative = 0f
+            var windowSampleCount = 0L
             var isEos = false
             val bufferInfo = MediaCodec.BufferInfo()
 
             try {
-                while (peaks.size < SAMPLE_COUNT) {
+                while (rawPeaks.size < SAMPLE_COUNT) {
                     // Feed input
                     if (!isEos) {
                         val inputIndex = codec.dequeueInputBuffer(TIMEOUT_US)
@@ -220,32 +219,31 @@ class WaveformExtractor @Inject constructor(
 
                             for (i in 0 until sampleCount) {
                                 val sample = shortBuffer.get()
-                                // Normalise to -1..1 preserving sign
-                                val signedNorm = sample.toFloat() / Short.MAX_VALUE
-                                val absNorm = abs(signedNorm)
-
-                                // Keep the sample with the largest magnitude, with its original sign
-                                if (absNorm > bucketAbsMax) {
-                                    bucketAbsMax = absNorm
-                                    bucketSignedPeak = signedNorm
+                                val norm = sample.toFloat() / Short.MAX_VALUE
+                                if (norm > windowMaxPositive) {
+                                    windowMaxPositive = norm
                                 }
-                                bucketSampleCount++
+                                if (norm < windowMaxNegative) {
+                                    windowMaxNegative = norm
+                                }
+                                windowSampleCount++
 
-                                if (bucketSampleCount >= samplesPerBucket) {
-                                    peaks.add(bucketSignedPeak)
-                                    bucketSignedPeak = 0f
-                                    bucketAbsMax = 0f
-                                    bucketSampleCount = 0
-                                    if (peaks.size >= SAMPLE_COUNT) break
+                                if (windowSampleCount >= samplesPerWindow) {
+                                    rawPeaks.add(windowMaxPositive)
+                                    rawPeaks.add(windowMaxNegative)
+                                    windowMaxPositive = 0f
+                                    windowMaxNegative = 0f
+                                    windowSampleCount = 0
+                                    if (rawPeaks.size >= SAMPLE_COUNT) break
                                 }
                             }
                         }
                         codec.releaseOutputBuffer(outputIndex, false)
 
                         if (bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
-                            // Flush remaining bucket
-                            if (bucketSampleCount > 0 && peaks.size < SAMPLE_COUNT) {
-                                peaks.add(bucketSignedPeak)
+                            if (windowSampleCount > 0 && rawPeaks.size < SAMPLE_COUNT) {
+                                rawPeaks.add(windowMaxPositive)
+                                rawPeaks.add(windowMaxNegative)
                             }
                             break
                         }
@@ -256,17 +254,16 @@ class WaveformExtractor @Inject constructor(
                 codec.release()
             }
 
-            if (peaks.isEmpty()) return null
+            if (rawPeaks.isEmpty()) return null
 
-            // Normalise peaks to -1..1 relative to the track's own max absolute value.
-            // Apply gentle soft-normalisation: scale so the loudest peak is at ~0.85,
-            // which prevents very loud tracks from clipping while keeping headroom.
-            val globalAbsMax = peaks.maxOfOrNull { abs(it) } ?: 1f
-            if (globalAbsMax <= 0f) return peaks
+            // Normalise peaks to -1..1 relative to the track's max absolute value.
+            // Target ~0.85 to preserve dynamic headroom while giving rich visual presence.
+            val globalAbsMax = rawPeaks.maxOfOrNull { abs(it) } ?: 1f
+            if (globalAbsMax <= 0f) return rawPeaks
 
             val normTarget = 0.85f
             val scaleFactor = normTarget / globalAbsMax
-            return peaks.map { (it * scaleFactor).coerceIn(-1f, 1f) }
+            return rawPeaks.map { (it * scaleFactor).coerceIn(-1f, 1f) }
 
         } catch (e: Exception) {
             e.printStackTrace()

@@ -179,7 +179,7 @@ fun SearchScreen(
                             contentPadding = PaddingValues(horizontal = Spacing.base),
                             horizontalArrangement = Arrangement.spacedBy(Spacing.md),
                         ) {
-                            items(artistResults) { artist ->
+                            items(artistResults, key = { it.id }) { artist ->
                                 com.mus.android.ui.components.ArtistCard(
                                     name = artist.name,
                                     artworkUri = artist.artworkUri,
@@ -207,7 +207,7 @@ fun SearchScreen(
                             contentPadding = PaddingValues(horizontal = Spacing.base),
                             horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
                         ) {
-                            items(albumResults) { album ->
+                            items(albumResults, key = { it.id }) { album ->
                                 com.mus.android.ui.components.AlbumCard(
                                     title = album.title,
                                     artist = album.artist,

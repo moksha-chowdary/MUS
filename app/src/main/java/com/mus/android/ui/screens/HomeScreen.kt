@@ -75,6 +75,13 @@ fun HomeScreen(
     val quickPickPages = remember(quickPicks) { quickPicks.chunked(4) }
     val quickPickPagerState = rememberPagerState(pageCount = { quickPickPages.size })
 
+    val systemPlaylists = remember(playlists) {
+        playlists.filter { it.isSystemPlaylist || com.mus.android.data.classifier.LanguageClassifier.isDefaultPlaylist(it.name) }
+    }
+    val userPlaylists = remember(playlists) {
+        playlists.filter { !it.isSystemPlaylist }
+    }
+
     var selectedTrackForMenu by remember { mutableStateOf<Track?>(null) }
 
     val context = LocalContext.current
@@ -475,7 +482,6 @@ fun HomeScreen(
                     }
 
                     // 2. LANGUAGE MIXES (Telugu, Tamil, Hindi, English, Other)
-                    val systemPlaylists = playlists.filter { it.isSystemPlaylist || com.mus.android.data.classifier.LanguageClassifier.isDefaultPlaylist(it.name) }
                     if (systemPlaylists.isNotEmpty()) {
                         item {
                             Text(
@@ -491,7 +497,7 @@ fun HomeScreen(
                                 contentPadding = PaddingValues(horizontal = Spacing.base),
                                 horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
                             ) {
-                                items(systemPlaylists) { pl ->
+                                items(systemPlaylists, key = { it.id }) { pl ->
                                     val tag = when {
                                         pl.name.contains("Telugu", ignoreCase = true) || pl.systemKey == "TELUGU" -> "TE"
                                         pl.name.contains("Tamil", ignoreCase = true) || pl.systemKey == "TAMIL" -> "TA"
@@ -564,7 +570,6 @@ fun HomeScreen(
                     }
 
                     // 4. PLAYLISTS (User custom playlists)
-                    val userPlaylists = playlists.filter { !it.isSystemPlaylist }
                     if (userPlaylists.isNotEmpty()) {
                         item {
                             Text(

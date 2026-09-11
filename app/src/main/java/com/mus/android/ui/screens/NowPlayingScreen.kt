@@ -4,9 +4,13 @@ import androidx.compose.animation.*
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.PlaylistAdd
 import androidx.compose.material.icons.automirrored.rounded.QueueMusic
 import androidx.compose.material.icons.rounded.*
 import androidx.compose.material3.*
@@ -14,14 +18,16 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.media3.common.Player
 import coil.compose.AsyncImage
 import com.mus.android.ui.ambient.AmbientGradientBackground
+import com.mus.android.ui.components.DepthCarousel
 import com.mus.android.ui.components.PlayPauseMorphButton
 import com.mus.android.ui.components.QualityBadge
 import com.mus.android.ui.components.WaveformSlider
@@ -31,15 +37,6 @@ import com.mus.android.ui.theme.Spacing
 import com.mus.android.ui.theme.TimestampStyle
 import com.mus.android.ui.viewmodel.NowPlayingViewModel
 
-import androidx.compose.foundation.pager.HorizontalPager
-import androidx.compose.foundation.pager.rememberPagerState
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.material.icons.automirrored.rounded.PlaylistAdd
-import com.mus.android.ui.components.DepthCarousel
-
 @Composable
 fun NowPlayingScreen(
     onBack: () -> Unit,
@@ -48,9 +45,6 @@ fun NowPlayingScreen(
 ) {
     val track by viewModel.currentTrack.collectAsState()
     val isPlaying by viewModel.isPlaying.collectAsState()
-    val position by viewModel.position.collectAsState()
-    val duration by viewModel.duration.collectAsState()
-    val waveformData by viewModel.waveformData.collectAsState()
     val artworkColors by viewModel.artworkColors.collectAsState()
     val shuffleEnabled by viewModel.shuffleEnabled.collectAsState()
     val repeatMode by viewModel.repeatMode.collectAsState()
@@ -70,54 +64,38 @@ fun NowPlayingScreen(
 
     var showAddToPlaylist by remember { mutableStateOf(false) }
 
-    val progress = if (duration > 0) position.toFloat() / duration.toFloat() else 0f
-
     // Artwork swipe pager backed by queue index
     val pagerState = rememberPagerState(
         initialPage = currentIndex.coerceAtLeast(0),
         pageCount = { if (queue.isNotEmpty()) queue.size else 1 }
     )
 
-    // Sync pager when track changes from playback/buttons
+    // Sync pager when track changes from playback/buttons (guarded against active user dragging)
     LaunchedEffect(currentIndex, queue.size) {
-        if (queue.isNotEmpty() && currentIndex in queue.indices && pagerState.currentPage != currentIndex) {
+        if (!pagerState.isScrollInProgress && queue.isNotEmpty() && currentIndex in queue.indices && pagerState.currentPage != currentIndex) {
             pagerState.animateScrollToPage(currentIndex)
         }
     }
 
-    // When user swipes to another page, commit track change
+    // When user swipes to another page, commit track change to single source of truth
     LaunchedEffect(pagerState.settledPage) {
         if (queue.isNotEmpty() && pagerState.settledPage in queue.indices && pagerState.settledPage != currentIndex) {
             viewModel.playQueueItem(pagerState.settledPage)
         }
     }
 
-    val scrollState = rememberScrollState()
-
     Box(
         modifier = Modifier
             .fillMaxSize()
-            // Absorb pointer events that were NOT consumed by our children (pager, buttons, etc.)
-            // so they cannot pass through to the navigation destination underneath.
-            //
-            // CRITICAL: We use PointerEventPass.Final (NOT Initial).
-            // Initial = top-down, runs BEFORE children → would block HorizontalPager + all buttons.
-            // Final   = runs AFTER children have already handled their events → children work
-            //           normally; we only catch the leftovers and prevent screen-behind touch-through.
-            .pointerInput(Unit) {
-                awaitPointerEventScope {
-                    while (true) {
-                        val event = awaitPointerEvent(
-                            pass = androidx.compose.ui.input.pointer.PointerEventPass.Final
-                        )
-                        event.changes.forEach { change ->
-                            if (!change.isConsumed) change.consume()
-                        }
-                    }
-                }
-            }
+            // Touch isolation: swallow taps on empty background areas so nothing reaches underlying destinations,
+            // while allowing all child gestures (HorizontalPager swipes, buttons, sliders) to function unhindered.
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = { /* Swallow taps on empty background space */ }
+            )
     ) {
-        // Ambient gradient background — full intensity
+        // Ambient gradient background — full atmospheric intensity
         AmbientGradientBackground(
             colors = artworkColors,
             intensity = 1f,
@@ -128,7 +106,6 @@ fun NowPlayingScreen(
                 .fillMaxSize()
                 .statusBarsPadding()
                 .navigationBarsPadding()
-                .verticalScroll(scrollState)
                 .padding(horizontal = Spacing.xl),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
@@ -165,7 +142,7 @@ fun NowPlayingScreen(
 
             Spacer(Modifier.height(Spacing.xl))
 
-            // Artwork — HorizontalPager swipe between tracks with physical feel
+            // Artwork — HorizontalPager swipe between tracks with physical card feel
             HorizontalPager(
                 state = pagerState,
                 modifier = Modifier
@@ -278,33 +255,12 @@ fun NowPlayingScreen(
 
             Spacer(Modifier.height(Spacing.lg))
 
-            // Waveform slider
-            WaveformSlider(
-                waveformData = waveformData,
-                progress = progress,
-                isPlaying = isPlaying,
-                onSeek = { viewModel.seekTo(it) },
+            // Isolated Playback Progress (Waveform Slider + Dot-Matrix Timestamps)
+            // Confines rapid position recompositions to this section only.
+            PlaybackProgressSection(
+                viewModel = viewModel,
                 modifier = Modifier.fillMaxWidth(),
             )
-
-            // Timestamps — dot-matrix style
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = Spacing.xs),
-                horizontalArrangement = Arrangement.SpaceBetween,
-            ) {
-                Text(
-                    text = formatDuration(position),
-                    style = TimestampStyle,
-                    color = MusColors.OnBackgroundSecondary,
-                )
-                Text(
-                    text = formatDuration(duration),
-                    style = TimestampStyle,
-                    color = MusColors.OnBackgroundTertiary,
-                )
-            }
 
             Spacer(Modifier.height(Spacing.xl))
 
@@ -458,6 +414,55 @@ fun NowPlayingScreen(
                     showAddToPlaylist = false
                 },
                 onDismiss = { showAddToPlaylist = false }
+            )
+        }
+    }
+}
+
+/**
+ * Isolated playback progress section: High-frequency position collection (~5Hz)
+ * is strictly isolated here so that the NowPlayingScreen, artwork HorizontalPager,
+ * metadata, ambient gradient, and controls do NOT recompose during playback ticks.
+ */
+@Composable
+private fun PlaybackProgressSection(
+    viewModel: NowPlayingViewModel,
+    modifier: Modifier = Modifier,
+) {
+    val position by viewModel.position.collectAsState()
+    val duration by viewModel.duration.collectAsState()
+    val waveformData by viewModel.waveformData.collectAsState()
+    val isPlaying by viewModel.isPlaying.collectAsState()
+    val progress = if (duration > 0) position.toFloat() / duration.toFloat() else 0f
+
+    Column(modifier = modifier) {
+        // Waveform slider — single bipolar progressive reveal
+        WaveformSlider(
+            waveformData = waveformData,
+            progress = progress,
+            isPlaying = isPlaying,
+            onSeek = { viewModel.seekTo(it) },
+            modifier = Modifier.fillMaxWidth(),
+        )
+
+        Spacer(Modifier.height(Spacing.xs))
+
+        // Timestamps — dot-matrix style
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = Spacing.xs),
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Text(
+                text = formatDuration(position),
+                style = TimestampStyle,
+                color = MusColors.OnBackgroundSecondary,
+            )
+            Text(
+                text = formatDuration(duration),
+                style = TimestampStyle,
+                color = MusColors.OnBackgroundTertiary,
             )
         }
     }

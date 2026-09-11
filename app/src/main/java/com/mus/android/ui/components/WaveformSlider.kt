@@ -6,15 +6,18 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
 import com.mus.android.ui.theme.MusColors
+import kotlin.math.abs
 
 /**
  * MUS waveform slider — progressive reveal paradigm.
@@ -29,13 +32,8 @@ import com.mus.android.ui.theme.MusColors
  * Seeking forward → extends the revealed region.
  * Seeking backward → retracts the revealed region.
  *
- * The waveform geometry is PRECOMPUTED and STATIC for the duration of the track.
- * Only the visible (revealed) region changes — it is NOT morphed or regenerated.
- *
- * Waveform data is signed (-1.0 to 1.0):
- *   positive value → peak above baseline
- *   negative value → peak below baseline
- *   0              → at baseline
+ * The waveform geometry is PRECOMPUTED and cached via drawWithCache.
+ * Dynamic updates during playback only adjust the reveal clipping boundary — zero allocations!
  */
 @Composable
 fun WaveformSlider(
@@ -51,9 +49,25 @@ fun WaveformSlider(
     var dragProgress by remember { mutableFloatStateOf(0f) }
     val currentProgress = if (isDragging) dragProgress else progress
 
-    val hasWaveform = remember(waveformData) { waveformData.isNotEmpty() }
+    // Sanitize waveform data so legacy unipolar cache entries immediately display bipolar
+    val sanitizedData = remember(waveformData) {
+        if (waveformData.isEmpty()) emptyList()
+        else {
+            val hasPos = waveformData.any { it > 0.05f }
+            val hasNeg = waveformData.any { it < -0.05f }
+            if (!hasPos || !hasNeg) {
+                // Alternate signs on unipolar legacy cache data
+                waveformData.mapIndexed { idx, amp ->
+                    val absVal = abs(amp)
+                    if (idx % 2 == 1) -absVal else absVal
+                }
+            } else {
+                waveformData
+            }
+        }
+    }
 
-    Canvas(
+    Spacer(
         modifier = modifier
             .fillMaxWidth()
             .height(56.dp)
@@ -82,102 +96,86 @@ fun WaveformSlider(
                     }
                 )
             }
-    ) {
-        val w = size.width
-        val h = size.height
-        val centerY = h / 2f
-        val revealX = (currentProgress * w).coerceIn(0f, w)
-        val strokeWidthPx = 2.dp.toPx()
+            .drawWithCache {
+                val w = size.width
+                val h = size.height
+                val centerY = h / 2f
+                val maxAmplitude = h * 0.42f
+                val strokeWidthPx = 2.5.dp.toPx()
+                val baselineStrokeWidthPx = 2.dp.toPx()
 
-        // ── 1. UNPLAYED BASELINE (right of playhead) ─────────────────────────────────
-        // Always a perfectly flat horizontal line from playhead to end.
-        drawLine(
-            color = baselineColor,
-            start = Offset(revealX, centerY),
-            end = Offset(w, centerY),
-            strokeWidth = strokeWidthPx,
-            cap = StrokeCap.Round,
-        )
+                // Precompute static bipolar waveform path across the full width
+                val wavePath = Path()
+                if (sanitizedData.size >= 2) {
+                    val sampleCount = sanitizedData.size
+                    wavePath.moveTo(0f, centerY)
+                    var prevX = 0f
+                    var prevY = centerY
 
-        if (!hasWaveform || currentProgress <= 0.002f) {
-            // At 0:00 or no audio data — entire timeline is a flat line.
-            drawLine(
-                color = baselineColor,
-                start = Offset(0f, centerY),
-                end = Offset(w, centerY),
-                strokeWidth = strokeWidthPx,
-                cap = StrokeCap.Round,
-            )
-        } else {
-            // ── 2. SINGLE SIGNED WAVEFORM (left of playhead) ─────────────────────────
-            // One continuous path. Positive values go above centerY, negative go below.
-            // Amplitude is half the canvas height — leaves comfortable margin top and bottom.
-            val maxAmplitude = h * 0.42f
-            val sampleCount = waveformData.size
-
-            // Number of samples elapsed up to revealX
-            val playedSampleCount = ((currentProgress * (sampleCount - 1)).toInt() + 1)
-                .coerceIn(1, sampleCount)
-
-            if (revealX > 2f && playedSampleCount > 0) {
-                // Build point list: x from 0..revealX, y = centerY - (signedAmp * maxAmplitude)
-                // Negative amplitude → y > centerY (below baseline)
-                // Positive amplitude → y < centerY (above baseline)
-                val points = ArrayList<Offset>(playedSampleCount + 1)
-
-                for (i in 0 until playedSampleCount) {
-                    val rawX = (i.toFloat() / (sampleCount - 1)) * w
-                    val x = rawX.coerceAtMost(revealX)
-                    // Signed peak: positive = above, negative = below
-                    val signedAmp = waveformData[i].coerceIn(-1f, 1f)
-                    val y = centerY - (signedAmp * maxAmplitude)
-                    points.add(Offset(x, y))
+                    for (i in 0 until sampleCount) {
+                        val currX = (i.toFloat() / (sampleCount - 1)) * w
+                        val signedAmp = sanitizedData[i].coerceIn(-1f, 1f)
+                        val currY = centerY - (signedAmp * maxAmplitude)
+                        val midX = (prevX + currX) / 2f
+                        val midY = (prevY + currY) / 2f
+                        wavePath.quadraticTo(prevX, prevY, midX, midY)
+                        prevX = currX
+                        prevY = currY
+                    }
+                    // Connect smoothly to the baseline at the right edge
+                    wavePath.quadraticTo(prevX, prevY, w, centerY)
                 }
 
-                // Close the waveform: last point smoothly returns to baseline at playhead
-                points.add(Offset(revealX, centerY))
+                onDrawBehind {
+                    val revealX = (currentProgress * w).coerceIn(0f, w)
 
-                if (points.size >= 2) {
-                    val wavePath = Path()
-                    wavePath.moveTo(0f, centerY) // start from baseline on the left edge
+                    // ── 1. UNPLAYED BASELINE (right of playhead) ─────────────────────────────────
+                    // Always a flat horizontal line from revealX to the right edge
+                    drawLine(
+                        color = baselineColor,
+                        start = Offset(revealX, centerY),
+                        end = Offset(w, centerY),
+                        strokeWidth = baselineStrokeWidthPx,
+                        cap = StrokeCap.Round,
+                    )
 
-                    // Smooth quadratic Bézier interpolation through all waveform points
-                    for (i in 1 until points.size) {
-                        val prev = points[i - 1]
-                        val curr = points[i]
-                        val midX = (prev.x + curr.x) / 2f
-                        val midY = (prev.y + curr.y) / 2f
-                        wavePath.quadraticTo(prev.x, prev.y, midX, midY)
+                    // ── 2. BIPOLAR WAVEFORM (left of playhead) ──────────────────────────────────
+                    // Revealed via clipRect: only the played portion is visible, exactly up to revealX
+                    if (sanitizedData.isNotEmpty() && currentProgress > 0.002f && revealX > 1f) {
+                        clipRect(left = 0f, top = 0f, right = revealX, bottom = h) {
+                            drawPath(
+                                path = wavePath,
+                                color = waveColor,
+                                style = Stroke(
+                                    width = strokeWidthPx,
+                                    cap = StrokeCap.Round,
+                                    join = StrokeJoin.Round,
+                                ),
+                            )
+                        }
+                    } else {
+                        // At 0:00 or empty timeline: draw flat baseline across the whole width
+                        drawLine(
+                            color = baselineColor,
+                            start = Offset(0f, centerY),
+                            end = Offset(w, centerY),
+                            strokeWidth = baselineStrokeWidthPx,
+                            cap = StrokeCap.Round,
+                        )
                     }
 
-                    // Final segment to the last point (revealX, centerY)
-                    val last = points.last()
-                    wavePath.lineTo(last.x, last.y)
-
-                    drawPath(
-                        path = wavePath,
-                        color = waveColor,
-                        style = Stroke(
-                            width = 2.5.dp.toPx(),
-                            cap = StrokeCap.Round,
-                            join = StrokeJoin.Round,
-                        ),
+                    // ── 3. TACTILE PLAYHEAD DOT ───────────────────────────────────────────────────
+                    drawCircle(
+                        color = MusColors.WaveformPlayhead.copy(alpha = 0.25f),
+                        radius = 6.dp.toPx(),
+                        center = Offset(revealX, centerY),
+                    )
+                    drawCircle(
+                        color = MusColors.WaveformPlayhead,
+                        radius = 3.5.dp.toPx(),
+                        center = Offset(revealX, centerY),
                     )
                 }
             }
-        }
-
-        // ── 3. TACTILE PLAYHEAD DOT ───────────────────────────────────────────────────
-        // Sits exactly at the boundary between revealed waveform and flat baseline.
-        drawCircle(
-            color = MusColors.WaveformPlayhead.copy(alpha = 0.25f),
-            radius = 6.dp.toPx(),
-            center = Offset(revealX, centerY),
-        )
-        drawCircle(
-            color = MusColors.WaveformPlayhead,
-            radius = 3.5.dp.toPx(),
-            center = Offset(revealX, centerY),
-        )
-    }
+    )
 }
