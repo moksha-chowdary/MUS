@@ -1,6 +1,5 @@
 package com.mus.android.ui.components
 
-import androidx.compose.animation.core.*
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -16,27 +15,31 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
 import com.mus.android.ui.theme.MusColors
-import kotlin.math.sin
 
 /**
  * MUS waveform slider — progressive reveal paradigm.
  *
  * FUNDAMENTAL RULE:
- * - LEFT OF PLAYBACK POSITION: real audio waveform with organic peaks/valleys
- * - RIGHT OF PLAYBACK POSITION: perfectly flat horizontal baseline
+ * - LEFT OF PLAYBACK POSITION: real audio waveform — ONE continuous signed path that travels
+ *   both above and below the central baseline according to actual audio amplitude.
+ * - RIGHT OF PLAYBACK POSITION: perfectly flat horizontal baseline — no future waveform shown.
  *
  * At 0:00 → entire timeline is a flat line.
- * As playback progresses → waveform is revealed from left to right.
- * Seeking forward → extends revealed portion.
- * Seeking backward → retracts revealed portion.
+ * As playback progresses → the single waveform is revealed from left to right.
+ * Seeking forward → extends the revealed region.
+ * Seeking backward → retracts the revealed region.
  *
- * The waveform shape is determined by real audio amplitude data.
- * While playing, a subtle phase animation gives the wave a "living" feel.
- * While paused, the wave freezes exactly where it is.
+ * The waveform geometry is PRECOMPUTED and STATIC for the duration of the track.
+ * Only the visible (revealed) region changes — it is NOT morphed or regenerated.
+ *
+ * Waveform data is signed (-1.0 to 1.0):
+ *   positive value → peak above baseline
+ *   negative value → peak below baseline
+ *   0              → at baseline
  */
 @Composable
 fun WaveformSlider(
-    waveformData: List<Float>, // normalized 0.0–1.0 amplitude peaks from real audio
+    waveformData: List<Float>, // signed -1.0..1.0 amplitude peaks from real audio
     progress: Float, // 0.0–1.0 playback position
     isPlaying: Boolean,
     onSeek: (Float) -> Unit,
@@ -44,32 +47,10 @@ fun WaveformSlider(
     waveColor: Color = MusColors.WaveformPlayed,
     baselineColor: Color = MusColors.WaveformUnplayed,
 ) {
-    // Subtle living animation phase — only advances while playing
-    val infiniteTransition = rememberInfiniteTransition(label = "wave_life")
-    val phaseRaw by infiniteTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = 360f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 4000, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart,
-        ),
-        label = "wave_phase",
-    )
-
-    // Freeze phase when paused
-    var frozenPhase by remember { mutableFloatStateOf(0f) }
-    val currentPhase = if (isPlaying) {
-        frozenPhase = phaseRaw
-        phaseRaw
-    } else {
-        frozenPhase
-    }
-
     var isDragging by remember { mutableStateOf(false) }
     var dragProgress by remember { mutableFloatStateOf(0f) }
     val currentProgress = if (isDragging) dragProgress else progress
 
-    // Pre-process amplitude data
     val hasWaveform = remember(waveformData) { waveformData.isNotEmpty() }
 
     Canvas(
@@ -106,98 +87,78 @@ fun WaveformSlider(
         val h = size.height
         val centerY = h / 2f
         val revealX = (currentProgress * w).coerceIn(0f, w)
+        val strokeWidthPx = 2.dp.toPx()
 
-        // ── 1. BASELINE ACROSS TIMELINE ──
-        // Subtly visible track guide under unrevealed section
+        // ── 1. UNPLAYED BASELINE (right of playhead) ─────────────────────────────────
+        // Always a perfectly flat horizontal line from playhead to end.
         drawLine(
             color = baselineColor,
             start = Offset(revealX, centerY),
             end = Offset(w, centerY),
-            strokeWidth = 2.dp.toPx(),
+            strokeWidth = strokeWidthPx,
             cap = StrokeCap.Round,
         )
 
         if (!hasWaveform || currentProgress <= 0.002f) {
-            // At 0:00 or with no audio data, the entire timeline is a PERFECTLY FLAT straight horizontal line.
+            // At 0:00 or no audio data — entire timeline is a flat line.
             drawLine(
                 color = baselineColor,
                 start = Offset(0f, centerY),
                 end = Offset(w, centerY),
-                strokeWidth = 2.dp.toPx(),
+                strokeWidth = strokeWidthPx,
                 cap = StrokeCap.Round,
             )
         } else {
-            val sampleCount = waveformData.size
-            val phaseRadians = Math.toRadians(currentPhase.toDouble())
+            // ── 2. SINGLE SIGNED WAVEFORM (left of playhead) ─────────────────────────
+            // One continuous path. Positive values go above centerY, negative go below.
+            // Amplitude is half the canvas height — leaves comfortable margin top and bottom.
             val maxAmplitude = h * 0.42f
+            val sampleCount = waveformData.size
 
-            // How many physical audio samples have elapsed up to revealX
-            // Sample i naturally lives at x = (i / (sampleCount - 1)) * w
-            val playedSampleCount = ((currentProgress * (sampleCount - 1)).toInt() + 1).coerceIn(1, sampleCount)
+            // Number of samples elapsed up to revealX
+            val playedSampleCount = ((currentProgress * (sampleCount - 1)).toInt() + 1)
+                .coerceIn(1, sampleCount)
 
             if (revealX > 2f && playedSampleCount > 0) {
-                // Collect points strictly from x = 0 to x = revealX
-                val points = ArrayList<Offset>(playedSampleCount + 2)
+                // Build point list: x from 0..revealX, y = centerY - (signedAmp * maxAmplitude)
+                // Negative amplitude → y > centerY (below baseline)
+                // Positive amplitude → y < centerY (above baseline)
+                val points = ArrayList<Offset>(playedSampleCount + 1)
 
                 for (i in 0 until playedSampleCount) {
                     val rawX = (i.toFloat() / (sampleCount - 1)) * w
                     val x = rawX.coerceAtMost(revealX)
-                    val baseAmp = waveformData[i].coerceIn(0f, 1f)
-
-                    // Subtle living wave breathing (only active when playing)
-                    val lifeOffset = if (isPlaying) {
-                        (sin(phaseRadians * 2.5 + i * 0.35) * 0.08f * baseAmp).toFloat()
-                    } else {
-                        (sin(Math.toRadians(frozenPhase.toDouble()) * 2.5 + i * 0.35) * 0.08f * baseAmp).toFloat()
-                    }
-                    val currentHeight = ((baseAmp + lifeOffset).coerceIn(0.02f, 1f)) * maxAmplitude
-                    points.add(Offset(x, currentHeight))
+                    // Signed peak: positive = above, negative = below
+                    val signedAmp = waveformData[i].coerceIn(-1f, 1f)
+                    val y = centerY - (signedAmp * maxAmplitude)
+                    points.add(Offset(x, y))
                 }
 
-                // Final point smoothly anchors into the flat baseline at (revealX, 0)
-                points.add(Offset(revealX, 0f))
+                // Close the waveform: last point smoothly returns to baseline at playhead
+                points.add(Offset(revealX, centerY))
 
-                if (points.isNotEmpty()) {
-                    val topPath = Path()
-                    val bottomPath = Path()
+                if (points.size >= 2) {
+                    val wavePath = Path()
+                    wavePath.moveTo(0f, centerY) // start from baseline on the left edge
 
-                    topPath.moveTo(0f, centerY - points[0].y)
-                    bottomPath.moveTo(0f, centerY + points[0].y)
-
-                    // Construct smooth Bezier curves connecting real audio peaks
+                    // Smooth quadratic Bézier interpolation through all waveform points
                     for (i in 1 until points.size) {
                         val prev = points[i - 1]
                         val curr = points[i]
                         val midX = (prev.x + curr.x) / 2f
-                        val midYTop = centerY - (prev.y + curr.y) / 2f
-                        val midYBottom = centerY + (prev.y + curr.y) / 2f
-
-                        topPath.quadraticTo(prev.x, centerY - prev.y, midX, midYTop)
-                        bottomPath.quadraticTo(prev.x, centerY + prev.y, midX, midYBottom)
+                        val midY = (prev.y + curr.y) / 2f
+                        wavePath.quadraticTo(prev.x, prev.y, midX, midY)
                     }
 
-                    // Complete the curve right into (revealX, centerY)
-                    val lastPoint = points.last()
-                    topPath.lineTo(lastPoint.x, centerY)
-                    bottomPath.lineTo(lastPoint.x, centerY)
+                    // Final segment to the last point (revealX, centerY)
+                    val last = points.last()
+                    wavePath.lineTo(last.x, last.y)
 
-                    // Draw the primary smooth audio sound wave (top)
                     drawPath(
-                        path = topPath,
+                        path = wavePath,
                         color = waveColor,
                         style = Stroke(
                             width = 2.5.dp.toPx(),
-                            cap = StrokeCap.Round,
-                            join = StrokeJoin.Round,
-                        ),
-                    )
-
-                    // Draw the mirrored bottom reflection wave for acoustic depth
-                    drawPath(
-                        path = bottomPath,
-                        color = waveColor.copy(alpha = 0.50f),
-                        style = Stroke(
-                            width = 2.dp.toPx(),
                             cap = StrokeCap.Round,
                             join = StrokeJoin.Round,
                         ),
@@ -206,8 +167,8 @@ fun WaveformSlider(
             }
         }
 
-        // ── 2. TACTILE PLAYHEAD DOT ──
-        // Exactly at the boundary between the revealed soundwave and the flat baseline
+        // ── 3. TACTILE PLAYHEAD DOT ───────────────────────────────────────────────────
+        // Sits exactly at the boundary between revealed waveform and flat baseline.
         drawCircle(
             color = MusColors.WaveformPlayhead.copy(alpha = 0.25f),
             radius = 6.dp.toPx(),

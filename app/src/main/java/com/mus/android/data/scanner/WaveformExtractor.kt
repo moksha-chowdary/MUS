@@ -21,8 +21,14 @@ import kotlin.math.min
 
 /**
  * Extracts real waveform amplitude data from audio files using MediaExtractor + MediaCodec.
- * Decodes the audio to PCM, then downsamples into ~200 normalized peak values (0.0–1.0).
- * Results are cached in Room via WaveformDao.
+ * Decodes the audio to PCM, then downsamples into ~200 SIGNED amplitude values (-1.0..1.0).
+ *
+ * Each bucket records the sample with the largest absolute value, preserving its original sign.
+ * This produces a single waveform that naturally travels both above and below the baseline,
+ * reflecting actual audio directionality.
+ *
+ * Results are cached in Room via WaveformDao. Stale magnitude-only (all-positive) entries
+ * are automatically invalidated and re-extracted on next load.
  */
 @Singleton
 class WaveformExtractor @Inject constructor(
@@ -36,18 +42,34 @@ class WaveformExtractor @Inject constructor(
     }
 
     /**
-     * Returns cached waveform data if available and READY, otherwise extracts from the audio file.
-     * Returns null if extraction fails — never returns synthetic/fake data.
+     * Returns cached waveform data if available and READY (with signed peaks), otherwise extracts
+     * from the audio file. Returns null if extraction fails — never returns synthetic/fake data.
      * Failed extractions are recorded in Room for later background repair.
      */
     suspend fun getWaveform(trackId: Long, uri: String): List<Float>? {
         // Check cache first
         waveformDao.getWaveform(trackId)?.let { cached ->
-            return when (cached.status) {
-                WaveformStatus.READY -> parsePeaks(cached.peaks)
-                WaveformStatus.EXTRACTING -> null // In progress
-                else -> null // FAILED or NEEDS_REPAIR — don't return stale data
+            if (cached.status == WaveformStatus.EXTRACTING) return null // In progress
+            if (cached.status == WaveformStatus.READY) {
+                val peaks = parsePeaks(cached.peaks)
+                // Detect stale magnitude-only (all-positive) entries from old extractor builds.
+                // If every sample is >= 0, it was extracted without sign preservation — re-extract.
+                if (peaks.isNotEmpty() && peaks.all { it >= 0f }) {
+                    // Invalidate so we re-extract with proper signed data
+                    waveformDao.insert(
+                        WaveformData(
+                            trackId = trackId,
+                            peaks = "",
+                            sampleCount = 0,
+                            status = WaveformStatus.FAILED,
+                        )
+                    )
+                    // Fall through to extraction below
+                } else {
+                    return peaks
+                }
             }
+            // FAILED or NEEDS_REPAIR — fall through to re-extract
         }
 
         // Mark as extracting
@@ -60,10 +82,10 @@ class WaveformExtractor @Inject constructor(
             )
         )
 
-        // Extract from audio
+        // Extract from audio on background thread
         val peaks = withContext(Dispatchers.Default) {
             try {
-                extractPeaks(Uri.parse(uri))
+                extractSignedPeaks(Uri.parse(uri))
             } catch (e: Exception) {
                 e.printStackTrace()
                 null
@@ -83,7 +105,7 @@ class WaveformExtractor @Inject constructor(
             return null
         }
 
-        // Cache the successful result
+        // Cache the successful result (signed floats serialise fine in comma-separated format)
         val peaksString = peaks.joinToString(",") { String.format(java.util.Locale.US, "%.4f", it) }
         waveformDao.insert(
             WaveformData(
@@ -114,9 +136,17 @@ class WaveformExtractor @Inject constructor(
     }
 
     /**
-     * Decodes the audio file and extracts normalized amplitude peaks.
+     * Decodes the audio file and extracts SIGNED amplitude peaks.
+     *
+     * Each bucket collects the sample with the largest absolute value and preserves its sign.
+     * This gives the "dominant direction" of each window which naturally alternates positive
+     * and negative, producing a single waveform that traverses both sides of the baseline.
+     *
+     * After collection, peaks are normalised so the track's max absolute value maps to ±1.
+     * Gentle soft-normalisation prevents very quiet tracks from appearing flat while preserving
+     * relative amplitude differences between sections (loud chorus vs quiet verse).
      */
-    private fun extractPeaks(uri: Uri): List<Float>? {
+    private fun extractSignedPeaks(uri: Uri): List<Float>? {
         val extractor = MediaExtractor()
         try {
             extractor.setDataSource(context, uri, null)
@@ -147,7 +177,9 @@ class WaveformExtractor @Inject constructor(
             codec.start()
 
             val peaks = mutableListOf<Float>()
-            var bucketMax = 0f
+            // Track the signed peak per bucket: the sample with largest |value|, sign preserved
+            var bucketSignedPeak = 0f
+            var bucketAbsMax = 0f
             var bucketSampleCount = 0L
             var isEos = false
             val bufferInfo = MediaCodec.BufferInfo()
@@ -188,13 +220,21 @@ class WaveformExtractor @Inject constructor(
 
                             for (i in 0 until sampleCount) {
                                 val sample = shortBuffer.get()
-                                val normalized = abs(sample.toFloat()) / Short.MAX_VALUE
-                                bucketMax = max(bucketMax, normalized)
+                                // Normalise to -1..1 preserving sign
+                                val signedNorm = sample.toFloat() / Short.MAX_VALUE
+                                val absNorm = abs(signedNorm)
+
+                                // Keep the sample with the largest magnitude, with its original sign
+                                if (absNorm > bucketAbsMax) {
+                                    bucketAbsMax = absNorm
+                                    bucketSignedPeak = signedNorm
+                                }
                                 bucketSampleCount++
 
                                 if (bucketSampleCount >= samplesPerBucket) {
-                                    peaks.add(bucketMax)
-                                    bucketMax = 0f
+                                    peaks.add(bucketSignedPeak)
+                                    bucketSignedPeak = 0f
+                                    bucketAbsMax = 0f
                                     bucketSampleCount = 0
                                     if (peaks.size >= SAMPLE_COUNT) break
                                 }
@@ -205,7 +245,7 @@ class WaveformExtractor @Inject constructor(
                         if (bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
                             // Flush remaining bucket
                             if (bucketSampleCount > 0 && peaks.size < SAMPLE_COUNT) {
-                                peaks.add(bucketMax)
+                                peaks.add(bucketSignedPeak)
                             }
                             break
                         }
@@ -216,12 +256,17 @@ class WaveformExtractor @Inject constructor(
                 codec.release()
             }
 
-            // Normalize peaks to 0.0–1.0 range relative to the track's own max
-            val globalMax = peaks.maxOrNull() ?: 1f
-            if (globalMax > 0f) {
-                return peaks.map { min(1f, it / globalMax) }
-            }
-            return peaks
+            if (peaks.isEmpty()) return null
+
+            // Normalise peaks to -1..1 relative to the track's own max absolute value.
+            // Apply gentle soft-normalisation: scale so the loudest peak is at ~0.85,
+            // which prevents very loud tracks from clipping while keeping headroom.
+            val globalAbsMax = peaks.maxOfOrNull { abs(it) } ?: 1f
+            if (globalAbsMax <= 0f) return peaks
+
+            val normTarget = 0.85f
+            val scaleFactor = normTarget / globalAbsMax
+            return peaks.map { (it * scaleFactor).coerceIn(-1f, 1f) }
 
         } catch (e: Exception) {
             e.printStackTrace()
@@ -231,4 +276,3 @@ class WaveformExtractor @Inject constructor(
         }
     }
 }
-

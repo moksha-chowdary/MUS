@@ -400,66 +400,7 @@ fun HomeScreen(
                         Spacer(Modifier.height(Spacing.xl))
                     }
 
-                    // 1. YOUR ALBUMS (Primary visual focus)
-                    if (albums.isNotEmpty()) {
-                        item {
-                            Text(
-                                "Your Albums",
-                                style = MaterialTheme.typography.titleMedium,
-                                color = MusColors.OnBackground,
-                                modifier = Modifier.padding(horizontal = Spacing.base),
-                            )
-                            Spacer(Modifier.height(Spacing.sm))
-                        }
-                        item {
-                            LazyRow(
-                                contentPadding = PaddingValues(horizontal = Spacing.base),
-                                horizontalArrangement = Arrangement.spacedBy(Spacing.md),
-                            ) {
-                                items(albums, key = { it.id }) { album ->
-                                    AlbumCard(
-                                        title = album.title,
-                                        artist = album.artist,
-                                        artworkUri = album.artworkUri,
-                                        onClick = { onAlbumClick(album.id) },
-                                    )
-                                }
-                            }
-                            Spacer(Modifier.height(Spacing.xl))
-                        }
-                    }
-
-                    // 2. PLAYLISTS (User custom playlists)
-                    val userPlaylists = playlists.filter { !it.isSystemPlaylist }
-                    if (userPlaylists.isNotEmpty()) {
-                        item {
-                            Text(
-                                "Playlists",
-                                style = MaterialTheme.typography.titleMedium,
-                                color = MusColors.OnBackground,
-                                modifier = Modifier.padding(horizontal = Spacing.base),
-                            )
-                            Spacer(Modifier.height(Spacing.sm))
-                        }
-                        item {
-                            LazyRow(
-                                contentPadding = PaddingValues(horizontal = Spacing.base),
-                                horizontalArrangement = Arrangement.spacedBy(Spacing.md),
-                            ) {
-                                items(userPlaylists, key = { it.id }) { pl ->
-                                    PlaylistCard(
-                                        name = pl.name,
-                                        trackCount = 0,
-                                        artworkUri = null,
-                                        onClick = { onPlaylistClick(pl.id) },
-                                    )
-                                }
-                            }
-                            Spacer(Modifier.height(Spacing.xl))
-                        }
-                    }
-
-                    // 3. QUICK PICKS (Parts 16-20)
+                    // 1. QUICK PICKS — top position, 8 songs, 4 per page
                     if (quickPicks.isNotEmpty()) {
                         item {
                             Row(
@@ -533,7 +474,7 @@ fun HomeScreen(
                         item { Spacer(Modifier.height(Spacing.xl)) }
                     }
 
-                    // 4. LANGUAGE MIXES (Telugu, Tamil, Hindi, English, Other)
+                    // 2. LANGUAGE MIXES (Telugu, Tamil, Hindi, English, Other)
                     val systemPlaylists = playlists.filter { it.isSystemPlaylist || com.mus.android.data.classifier.LanguageClassifier.isDefaultPlaylist(it.name) }
                     if (systemPlaylists.isNotEmpty()) {
                         item {
@@ -587,6 +528,65 @@ fun HomeScreen(
                                             color = MusColors.OnBackgroundSecondary
                                         )
                                     }
+                                }
+                            }
+                            Spacer(Modifier.height(Spacing.xl))
+                        }
+                    }
+
+                    // 3. YOUR ALBUMS
+                    if (albums.isNotEmpty()) {
+                        item {
+                            Text(
+                                "Your Albums",
+                                style = MaterialTheme.typography.titleMedium,
+                                color = MusColors.OnBackground,
+                                modifier = Modifier.padding(horizontal = Spacing.base),
+                            )
+                            Spacer(Modifier.height(Spacing.sm))
+                        }
+                        item {
+                            LazyRow(
+                                contentPadding = PaddingValues(horizontal = Spacing.base),
+                                horizontalArrangement = Arrangement.spacedBy(Spacing.md),
+                            ) {
+                                items(albums, key = { it.id }) { album ->
+                                    AlbumCard(
+                                        title = album.title,
+                                        artist = album.artist,
+                                        artworkUri = album.artworkUri,
+                                        onClick = { onAlbumClick(album.id) },
+                                    )
+                                }
+                            }
+                            Spacer(Modifier.height(Spacing.xl))
+                        }
+                    }
+
+                    // 4. PLAYLISTS (User custom playlists)
+                    val userPlaylists = playlists.filter { !it.isSystemPlaylist }
+                    if (userPlaylists.isNotEmpty()) {
+                        item {
+                            Text(
+                                "Playlists",
+                                style = MaterialTheme.typography.titleMedium,
+                                color = MusColors.OnBackground,
+                                modifier = Modifier.padding(horizontal = Spacing.base),
+                            )
+                            Spacer(Modifier.height(Spacing.sm))
+                        }
+                        item {
+                            LazyRow(
+                                contentPadding = PaddingValues(horizontal = Spacing.base),
+                                horizontalArrangement = Arrangement.spacedBy(Spacing.md),
+                            ) {
+                                items(userPlaylists, key = { it.id }) { pl ->
+                                    PlaylistCard(
+                                        name = pl.name,
+                                        trackCount = 0,
+                                        artworkUri = null,
+                                        onClick = { onPlaylistClick(pl.id) },
+                                    )
                                 }
                             }
                             Spacer(Modifier.height(Spacing.xl))

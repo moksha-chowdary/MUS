@@ -31,7 +31,7 @@ import com.mus.android.ui.theme.Spacing
 import com.mus.android.ui.theme.TimestampStyle
 import com.mus.android.ui.viewmodel.NowPlayingViewModel
 
-import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
@@ -98,8 +98,17 @@ fun NowPlayingScreen(
     Box(
         modifier = Modifier
             .fillMaxSize()
+            // Consume ALL pointer events so the screen beneath never receives any input.
+            // detectTapGestures only blocked taps — swipes/drags were still passing through.
             .pointerInput(Unit) {
-                detectTapGestures { /* Consume all clicks to completely isolate underlying screen */ }
+                awaitPointerEventScope {
+                    while (true) {
+                        val event = awaitPointerEvent(
+                            pass = androidx.compose.ui.input.pointer.PointerEventPass.Initial
+                        )
+                        event.changes.forEach { it.consume() }
+                    }
+                }
             }
     ) {
         // Ambient gradient background — full intensity
