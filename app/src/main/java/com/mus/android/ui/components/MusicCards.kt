@@ -20,13 +20,16 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
+import coil.request.ImageRequest
 import com.mus.android.data.model.Track
 import com.mus.android.ui.theme.MusColors
 import com.mus.android.ui.theme.Spacing
@@ -100,8 +103,16 @@ fun TrackRow(
                     modifier = Modifier.size(24.dp)
                 )
                 if (!track.artworkUri.isNullOrBlank()) {
+                    val context = LocalContext.current
+                    val request = remember(track.artworkUri) {
+                        ImageRequest.Builder(context)
+                            .data(track.artworkUri)
+                            .size(144, 144)
+                            .crossfade(false)
+                            .build()
+                    }
                     AsyncImage(
-                        model = track.artworkUri,
+                        model = request,
                         contentDescription = track.title,
                         contentScale = ContentScale.Crop,
                         modifier = Modifier.fillMaxSize()
@@ -185,8 +196,16 @@ fun AlbumCard(
                 modifier = Modifier.size(56.dp)
             )
             if (!artworkUri.isNullOrBlank()) {
+                val context = LocalContext.current
+                val request = remember(artworkUri) {
+                    ImageRequest.Builder(context)
+                        .data(artworkUri)
+                        .size(480, 480)
+                        .crossfade(false)
+                        .build()
+                }
                 AsyncImage(
-                    model = artworkUri,
+                    model = request,
                     contentDescription = title,
                     contentScale = ContentScale.Crop,
                     modifier = Modifier.fillMaxSize()
@@ -238,8 +257,16 @@ fun ArtistCard(
                 modifier = Modifier.size(48.dp)
             )
             if (!artworkUri.isNullOrBlank()) {
+                val context = LocalContext.current
+                val request = remember(artworkUri) {
+                    ImageRequest.Builder(context)
+                        .data(artworkUri)
+                        .size(360, 360)
+                        .crossfade(false)
+                        .build()
+                }
                 AsyncImage(
-                    model = artworkUri,
+                    model = request,
                     contentDescription = name,
                     contentScale = ContentScale.Crop,
                     modifier = Modifier.fillMaxSize()
@@ -307,8 +334,16 @@ fun PlaylistCard(
                 modifier = Modifier.size(48.dp)
             )
             if (!artworkUri.isNullOrBlank()) {
+                val context = LocalContext.current
+                val request = remember(artworkUri) {
+                    ImageRequest.Builder(context)
+                        .data(artworkUri)
+                        .size(420, 420)
+                        .crossfade(false)
+                        .build()
+                }
                 AsyncImage(
-                    model = artworkUri,
+                    model = request,
                     contentDescription = name,
                     contentScale = ContentScale.Crop,
                     modifier = Modifier.fillMaxSize()

@@ -6,9 +6,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
-import com.mus.android.ui.components.AnimatedListItem
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Album
@@ -149,20 +147,18 @@ fun AlbumScreen(
         }
 
         // Track list
-        itemsIndexed(tracks, key = { _, track -> track.id }) { index, track ->
-            AnimatedListItem(index = index) {
-                TrackRow(
-                    track = track,
-                    onClick = { 
-                        viewModel.playTrack(track)
-                        onTrackSelected?.invoke()
-                    },
-                    onFavoriteToggle = { viewModel.toggleFavorite(track.id) },
-                    onMoreClick = { selectedTrackForMenu = track },
-                    showArtwork = false,
-                    trackNumber = track.trackNumber,
-                )
-            }
+        items(tracks, key = { it.id }) { track ->
+            TrackRow(
+                track = track,
+                onClick = { 
+                    viewModel.playTrack(track)
+                    onTrackSelected?.invoke()
+                },
+                onFavoriteToggle = { viewModel.toggleFavorite(track.id) },
+                onMoreClick = { selectedTrackForMenu = track },
+                showArtwork = false,
+                trackNumber = track.trackNumber,
+            )
         }
     }
 

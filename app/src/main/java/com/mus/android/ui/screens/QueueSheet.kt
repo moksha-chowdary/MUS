@@ -19,15 +19,16 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import coil.compose.AsyncImage
+import coil.request.ImageRequest
 import com.mus.android.data.model.Track
 import com.mus.android.playback.QueueSource
-import com.mus.android.ui.components.AnimatedListItem
 import com.mus.android.ui.theme.MusColors
 import com.mus.android.ui.theme.Spacing
 import com.mus.android.ui.viewmodel.NowPlayingViewModel
@@ -191,57 +192,55 @@ fun QueueSheet(
                             val actualQueueIndex = currentIndex + 1 + uIndex
                             val isBeingDragged = draggingFromIndex == uIndex
 
-                            AnimatedListItem(index = uIndex) {
-                                UpNextTrackRow(
-                                    track = track,
-                                    isDragging = isBeingDragged,
-                                    dragOffsetY = if (isBeingDragged) dragOffsetY else 0f,
-                                    onLongPressDrag = {
-                                        // Long-press ANYWHERE on the row to initiate drag
-                                        detectDragGesturesAfterLongPress(
-                                            onDragStart = {
-                                                draggingFromIndex = uIndex
-                                                dragOffsetY = 0f
-                                            },
-                                            onDrag = { change, dragAmount ->
-                                                change.consume()
-                                                dragOffsetY += dragAmount.y
-                                            },
-                                            onDragEnd = {
-                                                val from = draggingFromIndex
-                                                if (from != null) {
-                                                    val shift = (dragOffsetY / itemHeightPx).toInt()
-                                                    val target = (from + shift).coerceIn(0, upcomingTracks.lastIndex)
-                                                    if (from != target) {
-                                                        // Single Media3 commit on drop only
-                                                        val actualFrom = currentIndex + 1 + from
-                                                        val actualTo = currentIndex + 1 + target
-                                                        viewModel.moveQueueItem(actualFrom, actualTo)
-                                                    }
+                            UpNextTrackRow(
+                                track = track,
+                                isDragging = isBeingDragged,
+                                dragOffsetY = if (isBeingDragged) dragOffsetY else 0f,
+                                onLongPressDrag = {
+                                    // Long-press ANYWHERE on the row to initiate drag
+                                    detectDragGesturesAfterLongPress(
+                                        onDragStart = {
+                                            draggingFromIndex = uIndex
+                                            dragOffsetY = 0f
+                                        },
+                                        onDrag = { change, dragAmount ->
+                                            change.consume()
+                                            dragOffsetY += dragAmount.y
+                                        },
+                                        onDragEnd = {
+                                            val from = draggingFromIndex
+                                            if (from != null) {
+                                                val shift = (dragOffsetY / itemHeightPx).toInt()
+                                                val target = (from + shift).coerceIn(0, upcomingTracks.lastIndex)
+                                                if (from != target) {
+                                                    // Single Media3 commit on drop only
+                                                    val actualFrom = currentIndex + 1 + from
+                                                    val actualTo = currentIndex + 1 + target
+                                                    viewModel.moveQueueItem(actualFrom, actualTo)
                                                 }
-                                                draggingFromIndex = null
-                                                dragOffsetY = 0f
-                                            },
-                                            onDragCancel = {
-                                                draggingFromIndex = null
-                                                dragOffsetY = 0f
                                             }
-                                        )
-                                    },
-                                    onClick = {
-                                        viewModel.playQueueItem(actualQueueIndex)
-                                    },
-                                    onRemove = {
-                                        viewModel.removeFromQueue(actualQueueIndex)
-                                    },
-                                    onPlayNext = {
-                                        // Move to top of Up Next (currentIndex + 1)
-                                        if (actualQueueIndex != currentIndex + 1) {
-                                            viewModel.moveQueueItem(actualQueueIndex, currentIndex + 1)
+                                            draggingFromIndex = null
+                                            dragOffsetY = 0f
+                                        },
+                                        onDragCancel = {
+                                            draggingFromIndex = null
+                                            dragOffsetY = 0f
                                         }
-                                    },
-                                )
-                            }
+                                    )
+                                },
+                                onClick = {
+                                    viewModel.playQueueItem(actualQueueIndex)
+                                },
+                                onRemove = {
+                                    viewModel.removeFromQueue(actualQueueIndex)
+                                },
+                                onPlayNext = {
+                                    // Move to top of Up Next (currentIndex + 1)
+                                    if (actualQueueIndex != currentIndex + 1) {
+                                        viewModel.moveQueueItem(actualQueueIndex, currentIndex + 1)
+                                    }
+                                },
+                            )
                         }
                     }
                 }
@@ -279,8 +278,16 @@ private fun NowPlayingQueueCard(
                 modifier = Modifier.size(24.dp),
             )
             if (!track.artworkUri.isNullOrBlank()) {
+                val context = LocalContext.current
+                val request = remember(track.artworkUri) {
+                    ImageRequest.Builder(context)
+                        .data(track.artworkUri)
+                        .size(156, 156)
+                        .crossfade(false)
+                        .build()
+                }
                 AsyncImage(
-                    model = track.artworkUri,
+                    model = request,
                     contentDescription = track.title,
                     contentScale = ContentScale.Crop,
                     modifier = Modifier.fillMaxSize(),
@@ -404,8 +411,16 @@ private fun UpNextTrackRow(
                 modifier = Modifier.size(20.dp),
             )
             if (!track.artworkUri.isNullOrBlank()) {
+                val context = LocalContext.current
+                val request = remember(track.artworkUri) {
+                    ImageRequest.Builder(context)
+                        .data(track.artworkUri)
+                        .size(132, 132)
+                        .crossfade(false)
+                        .build()
+                }
                 AsyncImage(
-                    model = track.artworkUri,
+                    model = request,
                     contentDescription = track.title,
                     contentScale = ContentScale.Crop,
                     modifier = Modifier.fillMaxSize(),

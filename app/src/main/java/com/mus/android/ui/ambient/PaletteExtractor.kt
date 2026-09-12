@@ -17,6 +17,7 @@ import com.mus.android.data.model.ArtworkPalette
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import android.util.LruCache
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -36,24 +37,31 @@ class PaletteExtractor @Inject constructor(
         val muted: Color,
     )
 
+    private val memoryCache = LruCache<String, ArtworkColors>(64)
+
     /**
      * Returns extracted colors for the given artwork URI.
-     * Uses cache first, extracts on cache miss.
+     * Uses in-memory cache first, then Room DB, then extracts on cache miss.
+     * Guaranteed to run off the main UI thread.
      */
     suspend fun extractColors(artworkUri: String?): ArtworkColors {
         if (artworkUri.isNullOrBlank()) return DEFAULT_COLORS
 
-        // Check cache
-        paletteDao.getPalette(artworkUri)?.let { cached ->
-            return ArtworkColors(
-                dominant = Color(cached.dominantColor),
-                vibrant = Color(cached.vibrantColor ?: cached.dominantColor),
-                muted = Color(cached.mutedColor ?: cached.dominantColor),
-            )
-        }
+        // In-memory cache check (instant, no I/O)
+        memoryCache.get(artworkUri)?.let { return it }
 
-        // Extract from bitmap
-        val colors = withContext(Dispatchers.Default) {
+        // Off-thread Room cache check & bitmap extraction
+        val colors = withContext(Dispatchers.IO) {
+            // Check Room cache
+            paletteDao.getPalette(artworkUri)?.let { cached ->
+                return@withContext ArtworkColors(
+                    dominant = Color(cached.dominantColor),
+                    vibrant = Color(cached.vibrantColor ?: cached.dominantColor),
+                    muted = Color(cached.mutedColor ?: cached.dominantColor),
+                )
+            }
+
+            // Extract from bitmap
             try {
                 val bitmap = loadBitmap(artworkUri) ?: return@withContext null
                 val palette = Palette.from(bitmap).generate()
@@ -62,8 +70,9 @@ class PaletteExtractor @Inject constructor(
                 e.printStackTrace()
                 null
             }
-        } ?: return DEFAULT_COLORS
+        } ?: DEFAULT_COLORS
 
+        memoryCache.put(artworkUri, colors)
         return colors
     }
 

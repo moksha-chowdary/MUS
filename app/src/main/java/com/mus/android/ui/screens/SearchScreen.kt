@@ -5,9 +5,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.text.BasicTextField
-import com.mus.android.ui.components.AnimatedListItem
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Clear
 import androidx.compose.material.icons.rounded.Search
@@ -230,14 +228,12 @@ fun SearchScreen(
                             modifier = Modifier.padding(horizontal = Spacing.base, vertical = Spacing.xs),
                         )
                     }
-                    itemsIndexed(trackResults, key = { _, track -> track.id }) { index, track ->
-                        AnimatedListItem(index = index) {
-                            TrackRow(
-                                track = track,
-                                onClick = { onTrackClick(track, trackResults) },
-                                onMoreClick = { selectedTrackForMenu = track },
-                            )
-                        }
+                    items(trackResults, key = { it.id }) { track ->
+                        TrackRow(
+                            track = track,
+                            onClick = { onTrackClick(track, trackResults) },
+                            onMoreClick = { selectedTrackForMenu = track },
+                        )
                     }
                 }
             }

@@ -5,9 +5,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
-import com.mus.android.ui.components.AnimatedListItem
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.DriveFileMove
@@ -260,35 +258,33 @@ fun PlaylistScreen(
                     }
                 }
 
-                itemsIndexed(tracks, key = { _, track -> track.id }) { index, track ->
-                    AnimatedListItem(index = index) {
-                        val isSelected = track.id in selectedTrackIds
-                        TrackRow(
-                            track = track,
-                            isInSelectionMode = isSelectionMode,
-                            isSelected = isSelected,
-                            onClick = {
-                                if (isSelectionMode) {
-                                    viewModel.toggleTrackSelection(track.id)
-                                } else {
-                                    viewModel.playTrack(track)
-                                    onTrackSelected?.invoke()
-                                }
-                            },
-                            onLongClick = {
-                                if (isSelectionMode) {
-                                    viewModel.toggleTrackSelection(track.id)
-                                } else {
-                                    viewModel.startSelectionMode(track.id)
-                                }
-                            },
-                            onMoreClick = {
-                                if (!isSelectionMode) {
-                                    selectedTrackForMenu = track
-                                }
-                            },
-                        )
-                    }
+                items(tracks, key = { it.id }) { track ->
+                    val isSelected = track.id in selectedTrackIds
+                    TrackRow(
+                        track = track,
+                        isInSelectionMode = isSelectionMode,
+                        isSelected = isSelected,
+                        onClick = {
+                            if (isSelectionMode) {
+                                viewModel.toggleTrackSelection(track.id)
+                            } else {
+                                viewModel.playTrack(track)
+                                onTrackSelected?.invoke()
+                            }
+                        },
+                        onLongClick = {
+                            if (isSelectionMode) {
+                                viewModel.toggleTrackSelection(track.id)
+                            } else {
+                                viewModel.startSelectionMode(track.id)
+                            }
+                        },
+                        onMoreClick = {
+                            if (!isSelectionMode) {
+                                selectedTrackForMenu = track
+                            }
+                        },
+                    )
                 }
             }
         }
