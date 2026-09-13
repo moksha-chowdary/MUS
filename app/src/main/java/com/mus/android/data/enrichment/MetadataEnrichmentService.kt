@@ -48,6 +48,17 @@ class MetadataEnrichmentService @Inject constructor(
     private val inFlightTrackIds = ConcurrentHashMap.newKeySet<Long>()
     private var lastRequestTime = 0L
     private val rateLimitLock = Any()
+    private var activeBatchJob: Job? = null
+
+    /**
+     * Cancels any active enrichment batch and clears in-flight track tracking.
+     */
+    fun cancelAllEnrichment() {
+        activeBatchJob?.cancel()
+        activeBatchJob = null
+        inFlightTrackIds.clear()
+        Log.i(TAG, "All in-flight enrichment cancelled")
+    }
 
     // ── Album Grouping Data Structures ────────────────────────
     data class AlbumGroup(
@@ -88,7 +99,8 @@ class MetadataEnrichmentService @Inject constructor(
         val tracksToProcess = tracks.filter { needsEnrichment(it) }
         if (tracksToProcess.isEmpty()) return
 
-        serviceScope.launch {
+        activeBatchJob?.cancel()
+        activeBatchJob = serviceScope.launch {
             // Group tracks into album candidates for batch enrichment
             val albumGroups = groupTracksIntoAlbumCandidates(tracksToProcess)
             val ungroupedTracks = mutableListOf<Track>()

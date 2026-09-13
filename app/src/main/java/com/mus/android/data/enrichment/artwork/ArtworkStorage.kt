@@ -176,6 +176,49 @@ class ArtworkStorage @Inject constructor(
         }
     }
 
+    /**
+     * Clears all cached and generated artwork files in app-owned storage.
+     * Deletes only MUS artwork files (e.g. art_*.jpg, art_album_*.jpg, art_*.tmp).
+     * Returns the count of deleted files.
+     */
+    fun clearAllArtwork(): Int {
+        var count = 0
+        try {
+            val dir = File(context.filesDir, "artwork")
+            if (dir.exists()) {
+                dir.listFiles()?.forEach { file ->
+                    if (file.isFile && (file.name.startsWith("art_") || file.name.endsWith(".jpg") || file.name.endsWith(".tmp"))) {
+                        if (file.delete()) {
+                            count++
+                        }
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Error clearing artwork cache: ${e.message}")
+        }
+        return count
+    }
+
+    /**
+     * Clears Coil image disk cache in context.cacheDir/image_cache.
+     * Returns count of deleted cache entries.
+     */
+    fun clearImageCache(): Int {
+        var count = 0
+        try {
+            val coilCache = context.cacheDir.resolve("image_cache")
+            if (coilCache.exists()) {
+                coilCache.listFiles()?.forEach { file ->
+                    if (file.deleteRecursively()) count++
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Error clearing Coil image cache: ${e.message}")
+        }
+        return count
+    }
+
     companion object {
         private const val TAG = "ArtworkStorage"
         val UNKNOWN_ALBUM_ID: Long = com.mus.android.data.scanner.MetadataUtils.generateAlbumId("Unknown Artist", "Unknown Album")

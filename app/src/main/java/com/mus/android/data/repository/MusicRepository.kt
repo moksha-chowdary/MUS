@@ -25,6 +25,7 @@ class MusicRepository @Inject constructor(
     private val waveformExtractor: WaveformExtractor,
     private val userPreferences: UserPreferencesRepository,
     private val enrichmentService: com.mus.android.data.enrichment.MetadataEnrichmentService,
+    private val artworkStorage: com.mus.android.data.enrichment.artwork.ArtworkStorage,
 ) {
     private val _idMigrations = kotlinx.coroutines.flow.MutableSharedFlow<Map<Long, Long>>(replay = 0, extraBufferCapacity = 1)
     val idMigrations: kotlinx.coroutines.flow.SharedFlow<Map<Long, Long>> = _idMigrations
@@ -171,6 +172,7 @@ class MusicRepository @Inject constructor(
 
     // ── Scanning ──────────────────────────────────────────────
     suspend fun scanDevice(safTreeUri: android.net.Uri? = null): MediaStoreScanner.ScanResult = withContext(Dispatchers.IO) {
+        ensureMetadataResetV2Completed()
         val targetUri = safTreeUri ?: userPreferences.customMuzicUri.value?.let { android.net.Uri.parse(it) }
         val result = scanner.scan(targetUri)
 
@@ -572,4 +574,120 @@ class MusicRepository @Inject constructor(
     suspend fun getWaveform(trackId: Long, uri: String): List<Float>? {
         return waveformExtractor.getWaveform(trackId, uri)
     }
+
+    // ── One-Time & Manual Metadata Reset ─────────────────────
+
+    /**
+     * One-time clean metadata reset:
+     * Erases old metadata/enrichment/artwork state in Room and disk cache
+     * while strictly preserving:
+     * - Track IDs (stable identity)
+     * - File paths & URIs
+     * - Technical specs (duration, size, dateAdded, dateModified, codec, sampleRate, bitDepth, bitrate, channels)
+     * - Favorite status
+     * - Play counts & last played timestamp
+     * - User playlists & playlist memberships
+     * - Language classifications
+     */
+    suspend fun performMetadataReset(): MetadataResetResult = withContext(Dispatchers.IO) {
+        android.util.Log.i("DIAG_METADATA_RESET", "=== METADATA RESET STARTED ===")
+        android.util.Log.i("DIAG_METADATA_RESET", "resetStarted: true")
+
+        // Abort any ongoing enrichment tasks to prevent race conditions
+        enrichmentService.cancelAllEnrichment()
+
+        val existingTracks = trackDao.getAllTracksOnce()
+        val tracksFound = existingTracks.size
+        android.util.Log.i("DIAG_METADATA_RESET", "tracksFound: $tracksFound")
+
+        var albumIdsCleared = 0
+        val resetTracks = existingTracks.map { track ->
+            if (track.albumId != 0L && track.albumId != com.mus.android.data.enrichment.artwork.ArtworkStorage.UNKNOWN_ALBUM_ID) {
+                albumIdsCleared++
+            }
+            track.copy(
+                albumId = 0L,
+                albumTitle = "",
+                albumArtist = "",
+                title = "",
+                artist = "",
+                genre = null,
+                composer = null,
+                trackNumber = 0,
+                discNumber = 0,
+                year = 0,
+                artworkUri = null,
+                artistArtworkUri = null,
+                metadataStatus = MetadataStatus.NEEDS_LOOKUP,
+                metadataSource = MetadataSource.EMBEDDED,
+                metadataConfidence = MetadataConfidence.LOW,
+                metadataLastUpdated = 0L,
+            )
+        }
+
+        if (resetTracks.isNotEmpty()) {
+            trackDao.insertAll(resetTracks)
+        }
+
+        // Wipe old generated albums, artists, and artwork palettes
+        albumDao.deleteAll()
+        artistDao.deleteAll()
+        try {
+            database.paletteDao().deleteAll()
+        } catch (e: Exception) {
+            android.util.Log.w("MusicRepository", "Error clearing palettes: ${e.message}")
+        }
+
+        // Delete all old generated artwork cache
+        val deletedArt = artworkStorage.clearAllArtwork()
+        artworkStorage.clearImageCache()
+
+        android.util.Log.i("DIAG_METADATA_RESET", "tracksReset: ${resetTracks.size}")
+        android.util.Log.i("DIAG_METADATA_RESET", "albumIdsCleared: $albumIdsCleared")
+        android.util.Log.i("DIAG_METADATA_RESET", "artworkFilesDeleted: $deletedArt")
+        android.util.Log.i("DIAG_METADATA_RESET", "resetCompleted: true")
+        android.util.Log.i("DIAG_METADATA_RESET", "=== METADATA RESET COMPLETED ===")
+
+        MetadataResetResult(
+            tracksFound = tracksFound,
+            tracksReset = resetTracks.size,
+            albumIdsCleared = albumIdsCleared,
+            artworkFilesDeleted = deletedArt,
+            resetStarted = true,
+            resetCompleted = true
+        )
+    }
+
+    /**
+     * Ensures the one-time clean metadata reset is executed once and only once across app versions.
+     */
+    suspend fun ensureMetadataResetV2Completed(): Boolean = withContext(Dispatchers.IO) {
+        if (!userPreferences.isMetadataResetV2Completed()) {
+            performMetadataReset()
+            userPreferences.setMetadataResetV2Completed(true)
+            true
+        } else {
+            false
+        }
+    }
+
+    /**
+     * Manual user-initiated or diagnostic action:
+     * Clears all old metadata and artwork, then triggers a fresh scan and enrichment.
+     */
+    suspend fun resetAndRebuildMetadata(): MetadataResetResult = withContext(Dispatchers.IO) {
+        val result = performMetadataReset()
+        userPreferences.setMetadataResetV2Completed(true)
+        scanDevice()
+        result
+    }
 }
+
+data class MetadataResetResult(
+    val tracksFound: Int,
+    val tracksReset: Int,
+    val albumIdsCleared: Int,
+    val artworkFilesDeleted: Int,
+    val resetStarted: Boolean = true,
+    val resetCompleted: Boolean = true,
+)

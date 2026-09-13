@@ -41,4 +41,16 @@ open class UserPreferencesRepository @Inject constructor(
         prefs.edit().putBoolean("automatic_metadata_enabled", enabled).apply()
         _automaticMetadataEnabled.value = enabled
     }
+
+    private val _metadataResetV2Completed by lazy { MutableStateFlow(prefs.getBoolean("metadata_reset_v2_completed", false)) }
+    open val metadataResetV2Completed: StateFlow<Boolean> get() = _metadataResetV2Completed.asStateFlow()
+
+    open fun isMetadataResetV2Completed(): Boolean {
+        return prefs.getBoolean("metadata_reset_v2_completed", false)
+    }
+
+    open fun setMetadataResetV2Completed(completed: Boolean) {
+        prefs.edit().putBoolean("metadata_reset_v2_completed", completed).apply()
+        _metadataResetV2Completed.value = completed
+    }
 }

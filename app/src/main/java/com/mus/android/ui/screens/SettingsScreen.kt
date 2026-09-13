@@ -298,6 +298,42 @@ fun SettingsScreen(
                 )
             }
 
+            var showResetMetadataDialog by remember { mutableStateOf(false) }
+            SettingsActionItem(
+                icon = Icons.Rounded.DeleteSweep,
+                title = "Reset & Rebuild Metadata",
+                subtitle = "Clear generated metadata & artwork, and re-scan from audio files",
+                onClick = { showResetMetadataDialog = true }
+            )
+            if (showResetMetadataDialog) {
+                androidx.compose.material3.AlertDialog(
+                    onDismissRequest = { showResetMetadataDialog = false },
+                    title = { Text("Reset & Rebuild Metadata?") },
+                    text = {
+                        Text(
+                            "This will remove MUS-generated metadata and album artwork and rebuild them from your music files. " +
+                            "Your music files, playlists, favorites, and play counts will not be deleted."
+                        )
+                    },
+                    confirmButton = {
+                        TextButton(onClick = {
+                            showResetMetadataDialog = false
+                            homeViewModel.resetAndRebuildMetadata()
+                        }) {
+                            Text("Reset & Rebuild", color = MusColors.OnBackground)
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { showResetMetadataDialog = false }) {
+                            Text("Cancel", color = MusColors.OnBackgroundSecondary)
+                        }
+                    },
+                    containerColor = MusColors.Surface,
+                    titleContentColor = MusColors.OnBackground,
+                    textContentColor = MusColors.OnBackgroundSecondary,
+                )
+            }
+
             Spacer(Modifier.height(Spacing.xl))
 
             // About Section

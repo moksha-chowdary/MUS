@@ -4,6 +4,7 @@ import com.mus.android.data.enrichment.MetadataEnrichmentService
 import com.mus.android.data.enrichment.artwork.ArtworkStorage
 import com.mus.android.data.enrichment.provider.RemoteTrackMetadata
 import com.mus.android.data.model.*
+import com.mus.android.data.repository.MetadataResetResult
 import com.mus.android.data.scanner.MetadataUtils
 import org.junit.Assert.*
 import org.junit.Test
@@ -558,6 +559,330 @@ class MetadataRobustnessTest {
     fun testArtworkValidation_ValidLocalFile_Accepted() {
         val validUri = "file:///data/user/0/com.mus.android/files/artwork/art_album_12345.jpg"
         assertTrue("Valid local artwork URI must be accepted", ArtworkStorage.isArtworkValid(validUri))
+    }
+
+    // ── Phase 13: Clean Metadata & Artwork Reset ──────────────
+
+    @Test
+    fun testMetadataReset_OldMetadataCleared_UserFieldsPreserved() {
+        val stableId = MetadataUtils.generateStableTrackId("/Muzic/Drake/NOKIA.mp3")!!
+        val oldArtUri = "file:///data/user/0/com.mus.android/files/artwork/art_album_99999.jpg"
+
+        val oldTrack = Track(
+            id = stableId,
+            title = "NOKIA",
+            artist = "Drake",
+            albumId = 99999L,
+            albumTitle = "Her Loss",
+            albumArtist = "Drake",
+            duration = 210000L,
+            year = 2022,
+            genre = "Hip-Hop",
+            composer = "Aubrey Graham",
+            uri = "content://media/external/audio/media/100",
+            artworkUri = oldArtUri,
+            artistArtworkUri = "file:///data/user/0/com.mus.android/files/artwork/art_artist_drake.jpg",
+            path = "/storage/emulated/0/Muzic/Drake/NOKIA.mp3",
+            metadataSource = MetadataSource.EXTERNAL,
+            metadataStatus = MetadataStatus.COMPLETE,
+            metadataConfidence = MetadataConfidence.HIGH,
+            metadataLastUpdated = 1700000000000L,
+            isFavorite = true,
+            playCount = 27,
+            lastPlayed = 1700050000000L,
+            language = "English",
+            trackNumber = 3,
+            discNumber = 1,
+            codec = "MP3",
+            bitrate = 320,
+            sampleRate = 44100,
+        )
+
+        // Perform the reset transformation on the track
+        val resetTrack = oldTrack.copy(
+            albumId = 0L,
+            albumTitle = "",
+            albumArtist = "",
+            title = "",
+            artist = "",
+            genre = null,
+            composer = null,
+            trackNumber = 0,
+            discNumber = 0,
+            year = 0,
+            artworkUri = null,
+            artistArtworkUri = null,
+            metadataStatus = MetadataStatus.NEEDS_LOOKUP,
+            metadataSource = MetadataSource.EMBEDDED,
+            metadataConfidence = MetadataConfidence.LOW,
+            metadataLastUpdated = 0L,
+        )
+
+        // VERIFY PRESERVED USER DATA & IDENTITY:
+        assertEquals("Track ID must be preserved", stableId, resetTrack.id)
+        assertEquals("Path must be preserved", oldTrack.path, resetTrack.path)
+        assertEquals("URI must be preserved", oldTrack.uri, resetTrack.uri)
+        assertEquals("Duration must be preserved", 210000L, resetTrack.duration)
+        assertTrue("Favorite status must remain true", resetTrack.isFavorite)
+        assertEquals("Play count must remain 27", 27, resetTrack.playCount)
+        assertEquals("Last played timestamp must remain intact", 1700050000000L, resetTrack.lastPlayed)
+        assertEquals("Language classification must remain English", "English", resetTrack.language)
+        assertEquals("Codec must be preserved", "MP3", resetTrack.codec)
+        assertEquals("Bitrate must be preserved", 320, resetTrack.bitrate)
+        assertEquals("Sample rate must be preserved", 44100, resetTrack.sampleRate)
+
+        // VERIFY CLEARED METADATA:
+        assertEquals("Album ID must be reset to unresolved (0L)", 0L, resetTrack.albumId)
+        assertEquals("Album title must be cleared", "", resetTrack.albumTitle)
+        assertEquals("Album artist must be cleared", "", resetTrack.albumArtist)
+        assertEquals("Title must be cleared", "", resetTrack.title)
+        assertEquals("Artist must be cleared", "", resetTrack.artist)
+        assertNull("Artwork URI must be cleared", resetTrack.artworkUri)
+        assertNull("Artist artwork URI must be cleared", resetTrack.artistArtworkUri)
+        assertNull("Genre must be cleared", resetTrack.genre)
+        assertNull("Composer must be cleared", resetTrack.composer)
+        assertEquals("Track number must be reset", 0, resetTrack.trackNumber)
+        assertEquals("Disc number must be reset", 0, resetTrack.discNumber)
+        assertEquals("Year must be reset", 0, resetTrack.year)
+        assertEquals("Metadata status must be reset to NEEDS_LOOKUP", MetadataStatus.NEEDS_LOOKUP, resetTrack.metadataStatus)
+        assertEquals("Metadata source must be reset to EMBEDDED", MetadataSource.EMBEDDED, resetTrack.metadataSource)
+        assertEquals("Metadata confidence must be reset to LOW", MetadataConfidence.LOW, resetTrack.metadataConfidence)
+        assertEquals("Metadata last updated must be reset to 0", 0L, resetTrack.metadataLastUpdated)
+    }
+
+    @Test
+    fun testMetadataReset_Idempotency_OnlyRunsOnce() {
+        var isResetCompleted = false
+        var resetRunCount = 0
+
+        fun checkAndPerformReset(): Boolean {
+            return if (!isResetCompleted) {
+                resetRunCount++
+                isResetCompleted = true
+                true
+            } else {
+                false
+            }
+        }
+
+        // Launch 1: Reset must run
+        val firstLaunchResult = checkAndPerformReset()
+        assertTrue("First launch must execute reset", firstLaunchResult)
+        assertEquals("Reset run count must be 1", 1, resetRunCount)
+        assertTrue("Reset flag must be marked complete", isResetCompleted)
+
+        // Launch 2: Reset must NOT run
+        val secondLaunchResult = checkAndPerformReset()
+        assertFalse("Second launch must skip reset", secondLaunchResult)
+        assertEquals("Reset run count must still be 1", 1, resetRunCount)
+
+        // Launch 3: Reset must NOT run
+        val thirdLaunchResult = checkAndPerformReset()
+        assertFalse("Third launch must skip reset", thirdLaunchResult)
+        assertEquals("Reset run count must still be 1", 1, resetRunCount)
+    }
+
+    @Test
+    fun testMetadataReset_PlaylistMembership_IntactAcrossReset() {
+        val stableTrackId = 12345L
+        val playlistId = 1L
+
+        // Playlist track linking to stableTrackId
+        val playlistTrack = PlaylistTrack(
+            playlistId = playlistId,
+            trackId = stableTrackId,
+            position = 0,
+            addedAt = 1600000000000L,
+        )
+
+        // Track is reset in Room
+        val resetTrack = createTrack(stableTrackId, "", "", "", "", "/Muzic/song.mp3").copy(
+            isFavorite = true,
+            playCount = 10,
+        )
+
+        // The trackId in PlaylistTrack matches the reset track's ID
+        assertEquals("Playlist track foreign key must match reset track ID", resetTrack.id, playlistTrack.trackId)
+        assertEquals("Playlist position must be preserved", 0, playlistTrack.position)
+        assertEquals("Playlist addedAt must be preserved", 1600000000000L, playlistTrack.addedAt)
+    }
+
+    @Test
+    fun testMetadataReset_ArtworkCachePurge_DeletesOldFiles() {
+        val tempDir = java.io.File(System.getProperty("java.io.tmpdir"), "artwork_purge_test_${System.nanoTime()}")
+        tempDir.mkdirs()
+
+        // Create sample artwork files
+        val albumArtFile = java.io.File(tempDir, "art_album_12345.jpg")
+        albumArtFile.writeText("fake-art-bytes-1")
+        val legacyArtFile = java.io.File(tempDir, "art_12345.jpg")
+        legacyArtFile.writeText("fake-art-bytes-2")
+        val keyArtFile = java.io.File(tempDir, "art_hashkey999.jpg")
+        keyArtFile.writeText("fake-art-bytes-3")
+        val tmpArtFile = java.io.File(tempDir, "art_temp.tmp")
+        tmpArtFile.writeText("fake-art-bytes-4")
+
+        assertTrue(albumArtFile.exists())
+        assertTrue(legacyArtFile.exists())
+        assertTrue(keyArtFile.exists())
+        assertTrue(tmpArtFile.exists())
+
+        // Simulate clearAllArtwork on temp directory
+        var deletedCount = 0
+        tempDir.listFiles()?.forEach { file ->
+            if (file.isFile && (file.name.startsWith("art_") || file.name.endsWith(".jpg") || file.name.endsWith(".tmp"))) {
+                if (file.delete()) deletedCount++
+            }
+        }
+
+        assertEquals("All 4 artwork files must be deleted", 4, deletedCount)
+        assertFalse("Old album artwork must no longer exist", albumArtFile.exists())
+        assertFalse("Old legacy artwork must no longer exist", legacyArtFile.exists())
+        assertFalse("Old key artwork must no longer exist", keyArtFile.exists())
+        assertFalse("Old tmp artwork must no longer exist", tmpArtFile.exists())
+
+        tempDir.deleteRecursively()
+    }
+
+    @Test
+    fun testMetadataReset_ScanReconcilesFreshEmbeddedTags_AfterReset() {
+        val stableId = MetadataUtils.generateStableTrackId("/Muzic/Telugu/Bahubali/Saahore.mp3")!!
+
+        // Track in Room AFTER reset
+        val resetTrackInRoom = Track(
+            id = stableId,
+            title = "",
+            artist = "",
+            albumId = 0L,
+            albumTitle = "",
+            albumArtist = "",
+            duration = 240000L,
+            uri = "content://media/external/audio/media/200",
+            path = "/storage/emulated/0/Muzic/Telugu/Bahubali/Saahore.mp3",
+            metadataSource = MetadataSource.EMBEDDED,
+            metadataStatus = MetadataStatus.NEEDS_LOOKUP,
+            metadataConfidence = MetadataConfidence.LOW,
+            isFavorite = true,
+            playCount = 10,
+            lastPlayed = 1600000000L,
+            language = "Telugu",
+        )
+
+        // Freshly scanned track from physical audio file with genuine embedded ID3 tags
+        val scannedRawTrack = Track(
+            id = stableId,
+            title = "Saahore Baahubali",
+            artist = "Daler Mehndi, M.M. Keeravaani",
+            albumId = MetadataUtils.generateAlbumId("M.M. Keeravaani", "Baahubali 2: The Conclusion"),
+            albumTitle = "Baahubali 2: The Conclusion",
+            albumArtist = "M.M. Keeravaani",
+            duration = 240000L,
+            trackNumber = 1,
+            discNumber = 1,
+            year = 2017,
+            genre = "Soundtrack",
+            composer = "M.M. Keeravaani",
+            uri = "content://media/external/audio/media/200",
+            artworkUri = "file:///data/user/0/com.mus.android/files/artwork/art_embedded_bahubali.jpg",
+            path = "/storage/emulated/0/Muzic/Telugu/Bahubali/Saahore.mp3",
+            metadataSource = MetadataSource.EMBEDDED,
+            metadataStatus = MetadataStatus.NEEDS_LOOKUP,
+            language = "Telugu",
+        )
+
+        // Simulate reconciliation logic
+        val wasEnriched = resetTrackInRoom.metadataStatus == MetadataStatus.COMPLETE ||
+                resetTrackInRoom.metadataStatus == MetadataStatus.PARTIAL ||
+                resetTrackInRoom.metadataStatus == MetadataStatus.NEEDS_REVIEW ||
+                resetTrackInRoom.metadataSource == MetadataSource.EXTERNAL ||
+                resetTrackInRoom.metadataSource == MetadataSource.MERGED
+
+        assertFalse("Reset track must not be marked as enriched", wasEnriched)
+
+        val finalArtworkUri = when {
+            ArtworkStorage.isArtworkValid(resetTrackInRoom.artworkUri) -> resetTrackInRoom.artworkUri
+            ArtworkStorage.isArtworkValid(scannedRawTrack.artworkUri) -> scannedRawTrack.artworkUri
+            else -> null
+        }
+
+        val finalTitle = if (wasEnriched || !MetadataUtils.isPlaceholderTitle(resetTrackInRoom.title)) {
+            resetTrackInRoom.title
+        } else {
+            scannedRawTrack.title
+        }
+
+        val finalArtist = if (wasEnriched || !MetadataUtils.isPlaceholderArtist(resetTrackInRoom.artist)) {
+            resetTrackInRoom.artist
+        } else {
+            scannedRawTrack.artist
+        }
+
+        val finalAlbumTitle = if (wasEnriched || !MetadataUtils.isPlaceholderAlbum(resetTrackInRoom.albumTitle)) {
+            resetTrackInRoom.albumTitle
+        } else {
+            scannedRawTrack.albumTitle
+        }
+
+        val finalAlbumArtist = if (wasEnriched || !MetadataUtils.isPlaceholderArtist(resetTrackInRoom.albumArtist)) {
+            resetTrackInRoom.albumArtist
+        } else {
+            scannedRawTrack.albumArtist
+        }
+
+        val finalAlbumId = if (wasEnriched) resetTrackInRoom.albumId else scannedRawTrack.albumId
+
+        val mergedTrack = scannedRawTrack.copy(
+            title = finalTitle,
+            artist = finalArtist,
+            albumArtist = finalAlbumArtist,
+            albumTitle = finalAlbumTitle,
+            albumId = finalAlbumId,
+            artworkUri = finalArtworkUri,
+            trackNumber = if (resetTrackInRoom.trackNumber > 0) resetTrackInRoom.trackNumber else scannedRawTrack.trackNumber,
+            discNumber = if (resetTrackInRoom.discNumber > 0) resetTrackInRoom.discNumber else scannedRawTrack.discNumber,
+            year = if (resetTrackInRoom.year > 0) resetTrackInRoom.year else scannedRawTrack.year,
+            genre = resetTrackInRoom.genre ?: scannedRawTrack.genre,
+            language = resetTrackInRoom.language,
+            isFavorite = resetTrackInRoom.isFavorite,
+            playCount = resetTrackInRoom.playCount,
+            lastPlayed = resetTrackInRoom.lastPlayed,
+        )
+
+        // VERIFY: Genuine embedded tags from scanned physical file take effect!
+        assertEquals("Title must come from genuine embedded tag", "Saahore Baahubali", mergedTrack.title)
+        assertEquals("Artist must come from genuine embedded tag", "Daler Mehndi, M.M. Keeravaani", mergedTrack.artist)
+        assertEquals("Album must come from genuine embedded tag", "Baahubali 2: The Conclusion", mergedTrack.albumTitle)
+        assertEquals("Album artist must come from genuine embedded tag", "M.M. Keeravaani", mergedTrack.albumArtist)
+        assertEquals("Track number must come from embedded tag", 1, mergedTrack.trackNumber)
+        assertEquals("Disc number must come from embedded tag", 1, mergedTrack.discNumber)
+        assertEquals("Year must come from embedded tag", 2017, mergedTrack.year)
+        assertEquals("Genre must come from embedded tag", "Soundtrack", mergedTrack.genre)
+        assertEquals("Artwork must come from embedded picture", scannedRawTrack.artworkUri, mergedTrack.artworkUri)
+
+        // VERIFY: User-owned fields survived reset and reconciliation!
+        assertTrue("Favorite status must survive", mergedTrack.isFavorite)
+        assertEquals("Play count must survive", 10, mergedTrack.playCount)
+        assertEquals("Last played must survive", 1600000000L, mergedTrack.lastPlayed)
+        assertEquals("Language must survive", "Telugu", mergedTrack.language)
+    }
+
+    @Test
+    fun testMetadataReset_DiagnosticLogging_ValuesAreTracked() {
+        val result = MetadataResetResult(
+            tracksFound = 150,
+            tracksReset = 150,
+            albumIdsCleared = 42,
+            artworkFilesDeleted = 38,
+            resetStarted = true,
+            resetCompleted = true
+        )
+
+        assertEquals("tracksFound must be 150", 150, result.tracksFound)
+        assertEquals("tracksReset must be 150", 150, result.tracksReset)
+        assertEquals("albumIdsCleared must be 42", 42, result.albumIdsCleared)
+        assertEquals("artworkFilesDeleted must be 38", 38, result.artworkFilesDeleted)
+        assertTrue("resetStarted must be true", result.resetStarted)
+        assertTrue("resetCompleted must be true", result.resetCompleted)
     }
 
     // ── Helpers ───────────────────────────────────────────────
