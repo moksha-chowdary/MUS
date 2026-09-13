@@ -53,4 +53,16 @@ open class UserPreferencesRepository @Inject constructor(
         prefs.edit().putBoolean("metadata_reset_v2_completed", completed).apply()
         _metadataResetV2Completed.value = completed
     }
+
+    private val _metadataRepairV3Completed by lazy { MutableStateFlow(prefs.getBoolean("metadata_repair_v3_completed", false)) }
+    open val metadataRepairV3Completed: StateFlow<Boolean> get() = _metadataRepairV3Completed.asStateFlow()
+
+    open fun isMetadataRepairV3Completed(): Boolean {
+        return prefs.getBoolean("metadata_repair_v3_completed", false)
+    }
+
+    open fun setMetadataRepairV3Completed(completed: Boolean) {
+        prefs.edit().putBoolean("metadata_repair_v3_completed", completed).apply()
+        _metadataRepairV3Completed.value = completed
+    }
 }

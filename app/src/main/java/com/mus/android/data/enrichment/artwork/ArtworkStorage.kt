@@ -103,6 +103,25 @@ class ArtworkStorage @Inject constructor(
     }
 
     /**
+     * Returns the file Uri for the cached embedded artwork for a specific track.
+     */
+    fun getEmbeddedArtworkUri(trackId: Long): String? {
+        val file = File(artworkDir, "art_embedded_$trackId.jpg")
+        return if (file.exists() && file.length() > 0L) {
+            fileToUriString(file)
+        } else {
+            null
+        }
+    }
+
+    /**
+     * Saves raw embedded artwork bytes isolated per track.
+     */
+    fun saveEmbeddedArtworkForTrack(trackId: Long, bytes: ByteArray): String? {
+        return saveEmbeddedArtworkByKey("embedded_$trackId", bytes)
+    }
+
+    /**
      * Saves raw artwork bytes for album ID.
      */
     fun saveEmbeddedArtwork(albumId: Long, bytes: ByteArray): String? {
@@ -177,6 +196,27 @@ class ArtworkStorage @Inject constructor(
     }
 
     /**
+     * Deletes only remote/generated iTunes album artwork (art_album_*.jpg, art_*.tmp),
+     * preserving genuine extracted embedded artwork (art_embedded_*.jpg).
+     */
+     fun clearRemoteArtwork(): Int {
+        var count = 0
+        try {
+            val dir = File(context.filesDir, "artwork")
+            if (dir.exists()) {
+                dir.listFiles()?.forEach { file ->
+                    if (file.isFile && (file.name.startsWith("art_album_") || file.name.endsWith(".tmp") || (file.name.startsWith("art_") && !file.name.startsWith("art_embedded_")))) {
+                        if (file.delete()) count++
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Error clearing remote artwork: ${e.message}")
+        }
+        return count
+    }
+
+    /**
      * Clears all cached and generated artwork files in app-owned storage.
      * Deletes only MUS artwork files (e.g. art_*.jpg, art_album_*.jpg, art_*.tmp).
      * Returns the count of deleted files.
@@ -222,6 +262,11 @@ class ArtworkStorage @Inject constructor(
     companion object {
         private const val TAG = "ArtworkStorage"
         val UNKNOWN_ALBUM_ID: Long = com.mus.android.data.scanner.MetadataUtils.generateAlbumId("Unknown Artist", "Unknown Album")
+
+        fun isEmbeddedArtwork(artworkUri: String?): Boolean {
+            if (artworkUri.isNullOrBlank()) return false
+            return artworkUri.contains("art_embedded_")
+        }
 
         private val isAndroidRuntime: Boolean by lazy {
             try {

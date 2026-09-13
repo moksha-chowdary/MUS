@@ -172,6 +172,7 @@ class MusicRepository @Inject constructor(
 
     // ── Scanning ──────────────────────────────────────────────
     suspend fun scanDevice(safTreeUri: android.net.Uri? = null): MediaStoreScanner.ScanResult = withContext(Dispatchers.IO) {
+        ensureMetadataRepairV3Completed()
         ensureMetadataResetV2Completed()
         val targetUri = safTreeUri ?: userPreferences.customMuzicUri.value?.let { android.net.Uri.parse(it) }
         val result = scanner.scan(targetUri)
@@ -659,6 +660,84 @@ class MusicRepository @Inject constructor(
     }
 
     /**
+     * One-time repair mechanism for Metadata and Artwork (V3).
+     * 1. Cancels in-flight enrichment
+     * 2. Clears remote artwork and cache
+     * 3. Clears derived albums, artists, palettes
+     * 4. Resets track metadata in DB to force fresh embedded extraction via scanDevice()
+     * 5. Runs scanDevice() with strict identity matching
+     */
+    suspend fun repairMetadataAndArtwork(): MetadataResetResult = withContext(Dispatchers.IO) {
+        android.util.Log.i("DIAG_METADATA_RESET", "=== METADATA & ARTWORK REPAIR V3 STARTED ===")
+        enrichmentService.cancelAllEnrichment()
+
+        val deletedArt = artworkStorage.clearAllArtwork()
+        artworkStorage.clearImageCache()
+
+        albumDao.deleteAll()
+        artistDao.deleteAll()
+        try {
+            database.paletteDao().deleteAll()
+        } catch (e: Exception) {
+            android.util.Log.w("MusicRepository", "Error clearing palettes: ${e.message}")
+        }
+
+        val existingTracks = trackDao.getAllTracksOnce()
+        val resetTracks = existingTracks.map { track ->
+            track.copy(
+                albumId = 0L,
+                albumTitle = "",
+                albumArtist = "",
+                title = "",
+                artist = "",
+                genre = null,
+                composer = null,
+                trackNumber = 0,
+                discNumber = 0,
+                year = 0,
+                artworkUri = null,
+                artistArtworkUri = null,
+                metadataStatus = MetadataStatus.NEEDS_LOOKUP,
+                metadataSource = MetadataSource.EMBEDDED,
+                metadataConfidence = MetadataConfidence.LOW,
+                metadataLastUpdated = 0L,
+            )
+        }
+
+        if (resetTracks.isNotEmpty()) {
+            trackDao.insertAll(resetTracks)
+        }
+
+        userPreferences.setMetadataRepairV3Completed(true)
+        userPreferences.setMetadataResetV2Completed(true)
+
+        scanDevice()
+
+        android.util.Log.i("DIAG_METADATA_RESET", "=== METADATA & ARTWORK REPAIR V3 COMPLETED ===")
+        MetadataResetResult(
+            tracksFound = existingTracks.size,
+            tracksReset = resetTracks.size,
+            albumIdsCleared = existingTracks.count { it.albumId != 0L },
+            artworkFilesDeleted = deletedArt,
+            resetStarted = true,
+            resetCompleted = true
+        )
+    }
+
+    /**
+     * Ensures the one-time V3 clean metadata and artwork repair is executed once and only once.
+     */
+    suspend fun ensureMetadataRepairV3Completed(): Boolean = withContext(Dispatchers.IO) {
+        if (!userPreferences.isMetadataRepairV3Completed()) {
+            userPreferences.setMetadataRepairV3Completed(true)
+            repairMetadataAndArtwork()
+            true
+        } else {
+            false
+        }
+    }
+
+    /**
      * Ensures the one-time clean metadata reset is executed once and only once across app versions.
      */
     suspend fun ensureMetadataResetV2Completed(): Boolean = withContext(Dispatchers.IO) {
@@ -678,6 +757,7 @@ class MusicRepository @Inject constructor(
     suspend fun resetAndRebuildMetadata(): MetadataResetResult = withContext(Dispatchers.IO) {
         val result = performMetadataReset()
         userPreferences.setMetadataResetV2Completed(true)
+        userPreferences.setMetadataRepairV3Completed(true)
         scanDevice()
         result
     }

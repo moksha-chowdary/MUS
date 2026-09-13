@@ -885,6 +885,192 @@ class MetadataRobustnessTest {
         assertTrue("resetCompleted must be true", result.resetCompleted)
     }
 
+    // ── Phase 3: Metadata & Artwork Matching Overhaul Tests ─────
+
+    @Test
+    fun testPlaceholderAlbumDetection_LanguageAndGenericFoldersRejected() {
+        // Common language folders from /Muzic/
+        assertTrue("English must be recognized as placeholder album", MetadataUtils.isPlaceholderAlbum("English"))
+        assertTrue("Telugu must be recognized as placeholder album", MetadataUtils.isPlaceholderAlbum("Telugu"))
+        assertTrue("Hindi must be recognized as placeholder album", MetadataUtils.isPlaceholderAlbum("Hindi"))
+        assertTrue("Tamil must be recognized as placeholder album", MetadataUtils.isPlaceholderAlbum("Tamil"))
+        assertTrue("Punjabi must be recognized as placeholder album", MetadataUtils.isPlaceholderAlbum("Punjabi"))
+        assertTrue("Malayalam must be recognized as placeholder album", MetadataUtils.isPlaceholderAlbum("Malayalam"))
+        assertTrue("Kannada must be recognized as placeholder album", MetadataUtils.isPlaceholderAlbum("Kannada"))
+
+        // Common generic folder/placeholder names
+        assertTrue("Unknown must be placeholder", MetadataUtils.isPlaceholderAlbum("Unknown"))
+        assertTrue("Unknown Album must be placeholder", MetadataUtils.isPlaceholderAlbum("Unknown Album"))
+        assertTrue("Downloads must be placeholder", MetadataUtils.isPlaceholderAlbum("Downloads"))
+        assertTrue("Audio must be placeholder", MetadataUtils.isPlaceholderAlbum("Audio"))
+        assertTrue("Music must be placeholder", MetadataUtils.isPlaceholderAlbum("Music"))
+        assertTrue("Muzic must be placeholder", MetadataUtils.isPlaceholderAlbum("Muzic"))
+        assertTrue("Singles must be placeholder", MetadataUtils.isPlaceholderAlbum("Singles"))
+        assertTrue("OST must be placeholder", MetadataUtils.isPlaceholderAlbum("OST"))
+        assertTrue("Soundtrack must be placeholder", MetadataUtils.isPlaceholderAlbum("Soundtrack"))
+
+        // Genuine album titles must NOT be flagged as placeholders
+        assertFalse("After Hours is a real album", MetadataUtils.isPlaceholderAlbum("After Hours"))
+        assertFalse("Beauty Behind the Madness is a real album", MetadataUtils.isPlaceholderAlbum("Beauty Behind the Madness"))
+        assertFalse("Baahubali is a real album", MetadataUtils.isPlaceholderAlbum("Baahubali"))
+        assertFalse("Animal is a real album", MetadataUtils.isPlaceholderAlbum("Animal"))
+        assertFalse("Thriller is a real album", MetadataUtils.isPlaceholderAlbum("Thriller"))
+    }
+
+    @Test
+    fun testProgressiveQueries_ExcludesPlaceholderAlbum() {
+        val service = createTestEnrichmentService()
+
+        // Track with placeholder album "English"
+        val trackWithPlaceholderAlbum = Track(
+            id = 501L,
+            title = "FE!N",
+            artist = "Travis Scott",
+            albumId = 1L,
+            albumTitle = "English",
+            uri = "/Muzic/English/FE!N.mp3",
+            path = "/Muzic/English/FE!N.mp3",
+            duration = 191000L,
+        )
+
+        val queries = service.buildProgressiveQueries(trackWithPlaceholderAlbum)
+        assertTrue("Queries must not be empty", queries.isNotEmpty())
+        for (q in queries) {
+            assertFalse("Placeholder album 'English' must never be included in search query: '$q'", q.contains("English", ignoreCase = true))
+        }
+        assertEquals("Travis Scott FE!N", queries[0])
+
+        // Track with genuine album
+        val trackWithRealAlbum = Track(
+            id = 502L,
+            title = "Blinding Lights",
+            artist = "The Weeknd",
+            albumId = 2L,
+            albumTitle = "After Hours",
+            uri = "/Muzic/English/Blinding Lights.mp3",
+            path = "/Muzic/English/Blinding Lights.mp3",
+            duration = 200000L,
+        )
+
+        val realQueries = service.buildProgressiveQueries(trackWithRealAlbum)
+        assertEquals("The Weeknd Blinding Lights After Hours", realQueries[0])
+        assertEquals("The Weeknd Blinding Lights", realQueries[1])
+    }
+
+    @Test
+    fun testIdentityGate_RejectsDurationOnlyMatch() {
+        val service = createTestEnrichmentService()
+        val localTrack = Track(
+            id = 503L,
+            title = "Dirty Diana",
+            artist = "Michael Jackson",
+            albumId = 3L,
+            albumTitle = "Bad",
+            duration = 296000L,
+            uri = "/Muzic/English/Dirty Diana.mp3",
+        )
+
+        // iTunes returns a completely different Michael Jackson song with same artist and similar duration
+        val wrongCandidate = RemoteTrackMetadata(
+            title = "Thriller",
+            artist = "Michael Jackson",
+            albumTitle = "Thriller",
+            durationMs = 295000L,
+            artworkUrl = "https://example.com/thriller.jpg",
+        )
+
+        val (bestMatch, confidence) = service.findBestMatch(localTrack, listOf(wrongCandidate))
+        assertNull("Duration similarity must NEVER rescue a title mismatch", bestMatch)
+        assertEquals(MetadataConfidence.LOW, confidence)
+    }
+
+    @Test
+    fun testIdentityGate_RejectsSubBandArtistMismatch() {
+        val service = createTestEnrichmentService()
+        val localTrack = Track(
+            id = 504L,
+            title = "Sing",
+            artist = "Travis",
+            albumId = 4L,
+            albumTitle = "The Invisible Band",
+            duration = 230000L,
+            uri = "/Muzic/Sing.mp3",
+        )
+
+        // Remote candidate is Travis Scott (different artist entirely, despite containing "Travis")
+        val candidate = RemoteTrackMetadata(
+            title = "Sing",
+            artist = "Travis Scott",
+            albumTitle = "Sing Single",
+            durationMs = 230000L,
+            artworkUrl = "https://example.com/art.jpg",
+        )
+
+        val (bestMatch, _) = service.findBestMatch(localTrack, listOf(candidate))
+        assertNull("Sub-string artist match 'Travis' in 'Travis Scott' must be rejected", bestMatch)
+    }
+
+    @Test
+    fun testIdentityGate_RejectsVersionMismatch() {
+        val service = createTestEnrichmentService()
+        val localTrack = Track(
+            id = 505L,
+            title = "In The End",
+            artist = "Linkin Park",
+            albumId = 5L,
+            albumTitle = "Hybrid Theory",
+            duration = 216000L,
+            uri = "/Muzic/In The End.mp3",
+        )
+
+        // Candidate is a live or remix version when local is original
+        val liveCandidate = RemoteTrackMetadata(
+            title = "In The End (Live)",
+            artist = "Linkin Park",
+            albumTitle = "Live in Texas",
+            durationMs = 216000L,
+            artworkUrl = "https://example.com/live.jpg",
+        )
+
+        assertFalse("Live version must not be compatible with original track",
+            MetadataUtils.areVersionsCompatible(localTrack.title, liveCandidate.title))
+
+        val (bestMatch, _) = service.findBestMatch(localTrack, listOf(liveCandidate))
+        assertNull("Version mismatch (Live vs Original) must be rejected by identity gate", bestMatch)
+    }
+
+    @Test
+    fun testEmbeddedArtwork_AlwaysWinsOverRemoteArtwork() = kotlinx.coroutines.runBlocking {
+        val service = createTestEnrichmentService()
+        val embeddedUri = "file:///data/user/0/com.mus.android/files/artwork/art_embedded_999.jpg"
+
+        val trackWithEmbeddedArt = Track(
+            id = 999L,
+            title = "Blinding Lights",
+            artist = "The Weeknd",
+            albumId = 999L,
+            albumTitle = "After Hours",
+            duration = 200000L,
+            uri = "/Muzic/01.mp3",
+            path = "/Muzic/01.mp3",
+            artworkUri = embeddedUri,
+            metadataSource = MetadataSource.EMBEDDED,
+        )
+
+        val remoteCandidate = RemoteTrackMetadata(
+            title = "Blinding Lights",
+            artist = "The Weeknd",
+            albumTitle = "After Hours",
+            year = 2020,
+            genre = "R&B/Soul",
+            artworkUrl = "https://example.com/itunes_artwork.jpg",
+        )
+
+        val enriched = service.mergeMetadata(trackWithEmbeddedArt, remoteCandidate, MetadataConfidence.HIGH)
+        assertEquals("Genuine embedded artwork MUST ALWAYS WIN over remote iTunes artwork", embeddedUri, enriched.artworkUri)
+    }
+
+
     // ── Helpers ───────────────────────────────────────────────
 
     private fun createTrack(
