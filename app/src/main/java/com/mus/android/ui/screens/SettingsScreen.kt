@@ -261,6 +261,43 @@ fun SettingsScreen(
                 }
             )
 
+            var showReEnrichDialog by remember { mutableStateOf(false) }
+            SettingsActionItem(
+                icon = Icons.Rounded.RestartAlt,
+                title = "Re-enrich Library",
+                subtitle = "Force re-fetch metadata for all tracks (preserves playlists & favorites)",
+                onClick = { showReEnrichDialog = true }
+            )
+            if (showReEnrichDialog) {
+                androidx.compose.material3.AlertDialog(
+                    onDismissRequest = { showReEnrichDialog = false },
+                    title = { Text("Re-enrich Entire Library?") },
+                    text = {
+                        Text(
+                            "This will re-fetch metadata and artwork for all tracks in your library. " +
+                            "Your playlists, favorites, and play counts will be preserved.\n\n" +
+                            "This may take a while depending on your library size and network speed."
+                        )
+                    },
+                    confirmButton = {
+                        TextButton(onClick = {
+                            showReEnrichDialog = false
+                            homeViewModel.refreshMetadata()
+                        }) {
+                            Text("Re-enrich", color = MusColors.OnBackground)
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { showReEnrichDialog = false }) {
+                            Text("Cancel", color = MusColors.OnBackgroundSecondary)
+                        }
+                    },
+                    containerColor = MusColors.Surface,
+                    titleContentColor = MusColors.OnBackground,
+                    textContentColor = MusColors.OnBackgroundSecondary,
+                )
+            }
+
             Spacer(Modifier.height(Spacing.xl))
 
             // About Section

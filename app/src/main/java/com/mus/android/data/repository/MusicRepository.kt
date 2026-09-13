@@ -187,12 +187,22 @@ class MusicRepository @Inject constructor(
                     relative to track
                 }
                 .toMap()
+            // Case-insensitive fallback for robustness across filesystem variations
+            val existingByMuzicPathLower = existingTracks
+                .mapNotNull { track ->
+                    val path = track.path ?: return@mapNotNull null
+                    val normalized = com.mus.android.data.scanner.MetadataUtils.normalizeForLookup(path) ?: return@mapNotNull null
+                    normalized to track
+                }
+                .toMap()
 
             val merged = result.tracks.map { scannedTrack ->
                 val scannedMuzicPath = scannedTrack.path?.let { com.mus.android.data.scanner.MetadataUtils.extractMuzicRelativePath(it) }
+                val scannedMuzicPathLower = scannedTrack.path?.let { com.mus.android.data.scanner.MetadataUtils.normalizeForLookup(it) }
                 val existing = existingById[scannedTrack.id]
                     ?: existingByUri[scannedTrack.path ?: scannedTrack.uri]
                     ?: scannedMuzicPath?.let { existingByMuzicPath[it] }
+                    ?: scannedMuzicPathLower?.let { existingByMuzicPathLower[it] }
                 if (existing != null) {
                     // Safe ID migration for old database: preserve playlist memberships and waveforms
                     if (existing.id != scannedTrack.id) {
@@ -219,68 +229,86 @@ class MusicRepository @Inject constructor(
                         }
                     }
 
-                    val wasEnriched = existing.metadataStatus == MetadataStatus.COMPLETE ||
-                            existing.metadataStatus == MetadataStatus.PARTIAL ||
-                            existing.metadataStatus == MetadataStatus.NEEDS_REVIEW ||
-                            existing.metadataSource == MetadataSource.EXTERNAL ||
-                            existing.metadataSource == MetadataSource.MERGED
-
-                    // Valid existing artwork check — purge shared unknown album art
-                    val finalArtworkUri = when {
-                        com.mus.android.data.enrichment.artwork.ArtworkStorage.isArtworkValid(existing.artworkUri) -> existing.artworkUri
-                        com.mus.android.data.enrichment.artwork.ArtworkStorage.isArtworkValid(scannedTrack.artworkUri) -> scannedTrack.artworkUri
-                        else -> null
-                    }
-
-                    val finalTitle = if (wasEnriched || !com.mus.android.data.scanner.MetadataUtils.isPlaceholderTitle(existing.title)) {
-                        existing.title
+                    // ENRICHING RACE PROTECTION: If a track is actively being enriched,
+                    // preserve its entire existing state — do NOT overwrite with scanner data.
+                    val isActivelyEnriching = existing.metadataStatus == MetadataStatus.ENRICHING &&
+                            System.currentTimeMillis() - existing.metadataLastUpdated < 5 * 60 * 1000L
+                    if (isActivelyEnriching) {
+                        android.util.Log.d("DIAG_METADATA", "ENRICHING_RACE_PROTECT: Track ${existing.id} is actively enriching, preserving existing metadata")
+                        existing.copy(
+                            id = scannedTrack.id,
+                            uri = scannedTrack.uri,
+                            path = scannedTrack.path ?: existing.path,
+                            size = if (scannedTrack.size > 0) scannedTrack.size else existing.size,
+                            dateModified = if (scannedTrack.dateModified > 0) scannedTrack.dateModified else existing.dateModified,
+                        )
                     } else {
-                        scannedTrack.title
-                    }
+                        val wasEnriched = existing.metadataStatus == MetadataStatus.COMPLETE ||
+                                existing.metadataStatus == MetadataStatus.PARTIAL ||
+                                existing.metadataStatus == MetadataStatus.NEEDS_REVIEW ||
+                                existing.metadataSource == MetadataSource.EXTERNAL ||
+                                existing.metadataSource == MetadataSource.MERGED
 
-                    val finalArtist = if (wasEnriched || !com.mus.android.data.scanner.MetadataUtils.isPlaceholderArtist(existing.artist)) {
-                        existing.artist
-                    } else {
-                        scannedTrack.artist
-                    }
+                        // Valid existing artwork check — purge shared unknown album art
+                        val finalArtworkUri = when {
+                            com.mus.android.data.enrichment.artwork.ArtworkStorage.isArtworkValid(existing.artworkUri) -> existing.artworkUri
+                            com.mus.android.data.enrichment.artwork.ArtworkStorage.isArtworkValid(scannedTrack.artworkUri) -> scannedTrack.artworkUri
+                            else -> null
+                        }
 
-                    val finalAlbumArtist = if (wasEnriched || !com.mus.android.data.scanner.MetadataUtils.isPlaceholderArtist(existing.albumArtist)) {
-                        existing.albumArtist
-                    } else {
-                        scannedTrack.albumArtist
-                    }
-
-                    val finalAlbumTitle = if (wasEnriched || !com.mus.android.data.scanner.MetadataUtils.isPlaceholderAlbum(existing.albumTitle)) {
-                        existing.albumTitle
-                    } else {
-                        scannedTrack.albumTitle
-                    }
-
-                    val finalAlbumId = if (wasEnriched) existing.albumId else scannedTrack.albumId
-
-                    scannedTrack.copy(
-                        title = finalTitle,
-                        artist = finalArtist,
-                        albumArtist = finalAlbumArtist,
-                        albumTitle = finalAlbumTitle,
-                        albumId = finalAlbumId,
-                        artworkUri = finalArtworkUri,
-                        year = if (existing.year > 0) existing.year else scannedTrack.year,
-                        genre = existing.genre ?: scannedTrack.genre,
-                        language = if (wasEnriched || (existing.language.isNotBlank() && existing.language != "Unknown")) {
-                            existing.language
+                        val finalTitle = if (wasEnriched || !com.mus.android.data.scanner.MetadataUtils.isPlaceholderTitle(existing.title)) {
+                            existing.title
                         } else {
-                            scannedTrack.language
-                        },
-                        composer = existing.composer ?: scannedTrack.composer,
-                        metadataSource = if (wasEnriched) existing.metadataSource else scannedTrack.metadataSource,
-                        metadataStatus = if (wasEnriched) existing.metadataStatus else scannedTrack.metadataStatus,
-                        metadataConfidence = if (wasEnriched) existing.metadataConfidence else scannedTrack.metadataConfidence,
-                        metadataLastUpdated = if (existing.metadataLastUpdated > 0) existing.metadataLastUpdated else scannedTrack.metadataLastUpdated,
-                        isFavorite = existing.isFavorite,
-                        playCount = existing.playCount,
-                        lastPlayed = existing.lastPlayed
-                    )
+                            scannedTrack.title
+                        }
+
+                        val finalArtist = if (wasEnriched || !com.mus.android.data.scanner.MetadataUtils.isPlaceholderArtist(existing.artist)) {
+                            existing.artist
+                        } else {
+                            scannedTrack.artist
+                        }
+
+                        val finalAlbumArtist = if (wasEnriched || !com.mus.android.data.scanner.MetadataUtils.isPlaceholderArtist(existing.albumArtist)) {
+                            existing.albumArtist
+                        } else {
+                            scannedTrack.albumArtist
+                        }
+
+                        val finalAlbumTitle = if (wasEnriched || !com.mus.android.data.scanner.MetadataUtils.isPlaceholderAlbum(existing.albumTitle)) {
+                            existing.albumTitle
+                        } else {
+                            scannedTrack.albumTitle
+                        }
+
+                        val finalAlbumId = if (wasEnriched) existing.albumId else scannedTrack.albumId
+
+                        scannedTrack.copy(
+                            title = finalTitle,
+                            artist = finalArtist,
+                            albumArtist = finalAlbumArtist,
+                            albumTitle = finalAlbumTitle,
+                            albumId = finalAlbumId,
+                            artworkUri = finalArtworkUri,
+                            trackNumber = if (existing.trackNumber > 0) existing.trackNumber else scannedTrack.trackNumber,
+                            discNumber = if (existing.discNumber > 0) existing.discNumber else scannedTrack.discNumber,
+                            year = if (existing.year > 0) existing.year else scannedTrack.year,
+                            genre = existing.genre ?: scannedTrack.genre,
+                            language = if (wasEnriched || (existing.language.isNotBlank() && existing.language != "Unknown")) {
+                                existing.language
+                            } else {
+                                scannedTrack.language
+                            },
+                            composer = existing.composer ?: scannedTrack.composer,
+                            artistArtworkUri = existing.artistArtworkUri ?: scannedTrack.artistArtworkUri,
+                            metadataSource = if (wasEnriched) existing.metadataSource else scannedTrack.metadataSource,
+                            metadataStatus = if (wasEnriched) existing.metadataStatus else scannedTrack.metadataStatus,
+                            metadataConfidence = if (wasEnriched) existing.metadataConfidence else scannedTrack.metadataConfidence,
+                            metadataLastUpdated = if (existing.metadataLastUpdated > 0) existing.metadataLastUpdated else scannedTrack.metadataLastUpdated,
+                            isFavorite = existing.isFavorite,
+                            playCount = existing.playCount,
+                            lastPlayed = existing.lastPlayed
+                        )
+                    }
                 } else {
                     scannedTrack
                 }
@@ -359,7 +387,7 @@ class MusicRepository @Inject constructor(
         // Automatically organize tracks into folder-derived playlists (English, Telugu, Hindi, etc.)
         reconcileFolderPlaylists(mergedTracks, targetUri)
 
-        // Use metadataStatus as the state machine to filter enrichment queue (Requirement 3)
+        // Use metadataStatus as the state machine to filter enrichment queue (Requirement 9)
         val tracksNeedingEnrichment = mergedTracks.filter { track ->
             when (track.metadataStatus) {
                 MetadataStatus.COMPLETE -> false
@@ -507,12 +535,33 @@ class MusicRepository @Inject constructor(
     fun isAutomaticMetadataEnabled(): Boolean = userPreferences.automaticMetadataEnabled.value
     fun setAutomaticMetadataEnabled(enabled: Boolean) = userPreferences.setAutomaticMetadataEnabled(enabled)
 
-    suspend fun refreshAllMetadata() = withContext(Dispatchers.IO) {
+    /**
+     * Force re-enriches the entire library by resetting metadata status to NEEDS_LOOKUP
+     * for all tracks, then re-enqueueing them for enrichment through the improved pipeline.
+     * Preserves: track identity, playlists, favorites, play counts, file paths.
+     * Does NOT create duplicate tracks.
+     */
+    suspend fun forceReEnrichLibrary() = withContext(Dispatchers.IO) {
         val allTracks = trackDao.getAllTracksOnce()
-        for (track in allTracks) {
-            enrichmentService.enrichTrack(track, forceRefresh = true)
+        val resetTracks = allTracks.map { track ->
+            track.copy(
+                metadataStatus = MetadataStatus.NEEDS_LOOKUP,
+                metadataConfidence = MetadataConfidence.LOW,
+                metadataLastUpdated = 0L,
+                // Preserve: id, title, artist, album, path, uri, favorites, playCount, lastPlayed, language
+            )
         }
+        if (resetTracks.isNotEmpty()) {
+            trackDao.insertAll(resetTracks)
+        }
+        android.util.Log.i("DIAG_METADATA", "FORCE_RE_ENRICH: Reset ${resetTracks.size} tracks to NEEDS_LOOKUP")
+        enrichmentService.enqueueEnrichment(resetTracks)
     }
+
+    /**
+     * Backward-compatible alias for forceReEnrichLibrary.
+     */
+    suspend fun refreshAllMetadata() = forceReEnrichLibrary()
 
     suspend fun refreshTrackMetadata(trackId: Long) = withContext(Dispatchers.IO) {
         val track = trackDao.getTrackById(trackId) ?: return@withContext

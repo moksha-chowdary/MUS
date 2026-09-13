@@ -15,6 +15,12 @@ import javax.inject.Singleton
 /**
  * Concrete MetadataProvider implementation powered by the public iTunes Search API.
  * Does not require authentication or API keys.
+ *
+ * Supports India storefront (`country=IN`) for Bollywood, Telugu, Tamil, and regional music,
+ * falling back to US storefront for English/international tracks.
+ *
+ * Correctly parses `collectionArtistName` for album artist (distinct from track `artistName`
+ * for compilation albums and soundtracks).
  */
 @Singleton
 class ITunesMetadataProvider @Inject constructor() : MetadataProvider {
@@ -25,13 +31,17 @@ class ITunesMetadataProvider @Inject constructor() : MetadataProvider {
         val trimmedQuery = query.trim()
         if (trimmedQuery.isBlank()) return@withContext emptyList()
 
+        // Detect if query likely targets Indian music for storefront selection
+        val useIndiaStorefront = isLikelyIndianMusic(trimmedQuery)
+        val country = if (useIndiaStorefront) "IN" else "US"
+
         var connection: HttpURLConnection? = null
         var attempts = 0
         while (attempts < 2) {
             attempts++
             try {
                 val encodedQuery = URLEncoder.encode(trimmedQuery, "UTF-8")
-                val endpoint = "https://itunes.apple.com/search?term=$encodedQuery&media=music&entity=song&limit=$limit"
+                val endpoint = "https://itunes.apple.com/search?term=$encodedQuery&media=music&entity=song&limit=$limit&country=$country"
                 val url = URL(endpoint)
 
                 connection = (url.openConnection() as HttpURLConnection).apply {
@@ -48,11 +58,54 @@ class ITunesMetadataProvider @Inject constructor() : MetadataProvider {
 
                 if (connection.responseCode != HttpURLConnection.HTTP_OK) {
                     Log.w(TAG, "iTunes API error: HTTP ${connection.responseCode}")
-                    return@withContext emptyList()
+
+                    // If India storefront returned empty/error, fallback to US
+                    if (useIndiaStorefront && attempts < 2) {
+                        connection.disconnect()
+                        connection = null
+                        Log.d(TAG, "Retrying with US storefront for '$trimmedQuery'")
+                        val fallbackEndpoint = "https://itunes.apple.com/search?term=$encodedQuery&media=music&entity=song&limit=$limit&country=US"
+                        val fallbackUrl = URL(fallbackEndpoint)
+                        connection = (fallbackUrl.openConnection() as HttpURLConnection).apply {
+                            requestMethod = "GET"
+                            connectTimeout = 8000
+                            readTimeout = 8000
+                            setRequestProperty("User-Agent", "Mozilla/5.0 (Android; Mobile; rv:120.0) Gecko/120.0 Firefox/120.0")
+                            setRequestProperty("Accept", "application/json")
+                        }
+                        if (connection.responseCode != HttpURLConnection.HTTP_OK) {
+                            return@withContext emptyList()
+                        }
+                    } else {
+                        return@withContext emptyList()
+                    }
                 }
 
                 val responseText = connection.inputStream.bufferedReader().use(BufferedReader::readText)
-                return@withContext parseResults(responseText)
+                val results = parseResults(responseText)
+
+                // If India storefront returned no results, try US storefront
+                if (results.isEmpty() && useIndiaStorefront && attempts < 2) {
+                    connection.disconnect()
+                    connection = null
+                    Log.d(TAG, "India storefront returned no results, retrying with US for '$trimmedQuery'")
+                    val fallbackEndpoint = "https://itunes.apple.com/search?term=$encodedQuery&media=music&entity=song&limit=$limit&country=US"
+                    val fallbackUrl = URL(fallbackEndpoint)
+                    connection = (fallbackUrl.openConnection() as HttpURLConnection).apply {
+                        requestMethod = "GET"
+                        connectTimeout = 8000
+                        readTimeout = 8000
+                        setRequestProperty("User-Agent", "Mozilla/5.0 (Android; Mobile; rv:120.0) Gecko/120.0 Firefox/120.0")
+                        setRequestProperty("Accept", "application/json")
+                    }
+                    if (connection.responseCode == HttpURLConnection.HTTP_OK) {
+                        val fallbackText = connection.inputStream.bufferedReader().use(BufferedReader::readText)
+                        return@withContext parseResults(fallbackText)
+                    }
+                    return@withContext emptyList()
+                }
+
+                return@withContext results
             } catch (e: java.net.UnknownHostException) {
                 if (attempts < 2) {
                     Log.d(TAG, "DNS resolution failed, retrying in 1s for '$trimmedQuery'...")
@@ -95,6 +148,11 @@ class ITunesMetadataProvider @Inject constructor() : MetadataProvider {
                 val genre = item.optString("primaryGenreName").takeIf { it.isNotBlank() }
                 val durationMs = item.optLong("trackTimeMillis", 0L)
 
+                // FIX: Parse collectionArtistName for album artist (distinct from track artistName)
+                // This is critical for compilation albums and soundtracks
+                val collectionArtistName = item.optString("collectionArtistName").takeIf { it.isNotBlank() }
+                val albumArtist = collectionArtistName ?: artistName
+
                 // Year extraction from releaseDate e.g. "2020-03-20T07:00:00Z"
                 val releaseDate = item.optString("releaseDate")
                 val year = if (releaseDate.length >= 4) {
@@ -118,7 +176,7 @@ class ITunesMetadataProvider @Inject constructor() : MetadataProvider {
                         title = trackName,
                         artist = artistName,
                         albumTitle = collectionName,
-                        albumArtist = artistName,
+                        albumArtist = albumArtist,
                         trackNumber = trackNumber,
                         discNumber = discNumber,
                         year = year,
@@ -134,6 +192,29 @@ class ITunesMetadataProvider @Inject constructor() : MetadataProvider {
             Log.w(TAG, "Error parsing iTunes JSON response", e)
         }
         return resultsList
+    }
+
+    /**
+     * Heuristic to determine if a search query likely targets Indian/regional music.
+     * Uses common Hindi/Telugu/Tamil keywords and artist names.
+     */
+    private fun isLikelyIndianMusic(query: String): Boolean {
+        val lower = query.lowercase()
+        val indianIndicators = listOf(
+            // Language/genre indicators
+            "bollywood", "tollywood", "kollywood", "hindi", "telugu", "tamil",
+            "punjabi", "bhangra", "ghazal", "qawwali", "bhajan", "devotional",
+            "carnatic", "hindustani", "filmi",
+            // Common Hindi tokens
+            "dil", "pyaar", "ishq", "tera", "mera", "tum", "hum", "zindagi",
+            "duniya", "mohabbat", "deewana", "sajna", "rabba", "khuda",
+            // Common Bollywood artists
+            "arijit", "shreya", "atif", "neha kakkar", "kumar sanu", "kishore kumar",
+            "lata mangeshkar", "a.r. rahman", "ar rahman", "pritam", "vishal",
+            // Telugu/Tamil indicators
+            "thaman", "anirudh", "sid sriram", "srivalli", "naatu", "pushpa",
+        )
+        return indianIndicators.any { lower.contains(it) }
     }
 
     companion object {

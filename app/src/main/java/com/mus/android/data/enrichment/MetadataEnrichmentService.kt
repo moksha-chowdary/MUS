@@ -28,6 +28,10 @@ import kotlin.math.abs
  * Preserves all valid embedded metadata, identifies missing metadata via a
  * replaceable MetadataProvider, verifies match confidence, persists downloaded
  * artwork locally, and updates Room asynchronously without blocking playback.
+ *
+ * Supports album-group enrichment: tracks belonging to the same album are
+ * enriched together with a single lookup, ensuring consistent album identity,
+ * artwork, and metadata across all tracks in the group.
  */
 @Singleton
 class MetadataEnrichmentService @Inject constructor(
@@ -44,6 +48,13 @@ class MetadataEnrichmentService @Inject constructor(
     private val inFlightTrackIds = ConcurrentHashMap.newKeySet<Long>()
     private var lastRequestTime = 0L
     private val rateLimitLock = Any()
+
+    // ── Album Grouping Data Structures ────────────────────────
+    data class AlbumGroup(
+        val groupKey: String,
+        val tracks: List<Track>,
+        val anchorTrack: Track,
+    )
 
     private suspend fun throttleRequest() {
         val waitTime = synchronized(rateLimitLock) {
@@ -65,6 +76,7 @@ class MetadataEnrichmentService @Inject constructor(
 
     /**
      * Enqueues a list of tracks for background metadata enrichment.
+     * Groups tracks by album before enriching to ensure consistent album identity.
      * Non-blocking; returns immediately.
      */
     fun enqueueEnrichment(tracks: List<Track>) {
@@ -73,8 +85,29 @@ class MetadataEnrichmentService @Inject constructor(
             return
         }
 
+        val tracksToProcess = tracks.filter { needsEnrichment(it) }
+        if (tracksToProcess.isEmpty()) return
+
         serviceScope.launch {
-            for (track in tracks) {
+            // Group tracks into album candidates for batch enrichment
+            val albumGroups = groupTracksIntoAlbumCandidates(tracksToProcess)
+            val ungroupedTracks = mutableListOf<Track>()
+
+            for (group in albumGroups) {
+                if (group.tracks.size >= 2) {
+                    // Album group: enrich as a group
+                    concurrencySemaphore.withPermit {
+                        throttleRequest()
+                        enrichAlbumGroup(group)
+                    }
+                } else {
+                    // Single track: enrich individually
+                    ungroupedTracks.addAll(group.tracks)
+                }
+            }
+
+            // Process ungrouped/single tracks individually
+            for (track in ungroupedTracks) {
                 if (needsEnrichment(track)) {
                     concurrencySemaphore.withPermit {
                         throttleRequest()
@@ -149,6 +182,343 @@ class MetadataEnrichmentService @Inject constructor(
         return ArtworkStorage.isArtworkValid(track.artworkUri)
     }
 
+    // ── Album Grouping ────────────────────────────────────────
+
+    /**
+     * Groups tracks into album candidates for batch enrichment.
+     * Priority:
+     * 1. Valid embedded albumArtist + albumTitle
+     * 2. Valid albumTitle + artist information
+     * 3. Canonical containing folder beneath /Muzic/ (but NOT the entire language folder)
+     */
+    fun groupTracksIntoAlbumCandidates(tracks: List<Track>): List<AlbumGroup> {
+        val groups = mutableMapOf<String, MutableList<Track>>()
+
+        for (track in tracks) {
+            val groupKey = determineAlbumGroupKey(track)
+            groups.getOrPut(groupKey) { mutableListOf() }.add(track)
+        }
+
+        return groups.map { (key, groupTracks) ->
+            val anchor = selectAnchorTrack(groupTracks)
+            AlbumGroup(
+                groupKey = key,
+                tracks = groupTracks,
+                anchorTrack = anchor,
+            )
+        }
+    }
+
+    /**
+     * Determines the album group key for a track.
+     * Uses metadata when available, falls back to folder structure.
+     */
+    private fun determineAlbumGroupKey(track: Track): String {
+        val hasAlbum = !MetadataUtils.isPlaceholderAlbum(track.albumTitle)
+        val hasAlbumArtist = !MetadataUtils.isPlaceholderArtist(track.albumArtist)
+        val hasArtist = !MetadataUtils.isPlaceholderArtist(track.artist)
+
+        // 1. Best: albumArtist + albumTitle (canonical grouping)
+        if (hasAlbum && hasAlbumArtist) {
+            return "meta:${MetadataUtils.normalizeString(track.albumArtist)}|${MetadataUtils.normalizeString(track.albumTitle)}"
+        }
+
+        // 2. Good: albumTitle + artist
+        if (hasAlbum && hasArtist) {
+            return "meta:${MetadataUtils.normalizeString(track.artist)}|${MetadataUtils.normalizeString(track.albumTitle)}"
+        }
+
+        // 3. Fallback: containing folder (but NOT the language folder itself)
+        val albumFolder = MetadataUtils.extractAlbumFolderPath(track.path ?: track.uri)
+        if (albumFolder != null) {
+            // Only use folder if it has more than one segment (i.e. not just "English" or "Hindi")
+            val segments = albumFolder.split("/")
+            if (segments.size >= 2) {
+                return "folder:${albumFolder.lowercase()}"
+            }
+        }
+
+        // 4. Last resort: unique per track
+        return "single:${track.id}"
+    }
+
+    /**
+     * Selects the track with the strongest metadata as the album anchor.
+     * Prefers: valid embedded album → valid albumArtist → valid title → has track number.
+     */
+    fun selectAnchorTrack(tracks: List<Track>): Track {
+        return tracks.maxByOrNull { track ->
+            var score = 0
+            if (!MetadataUtils.isPlaceholderAlbum(track.albumTitle)) score += 40
+            if (!MetadataUtils.isPlaceholderArtist(track.albumArtist)) score += 30
+            if (!MetadataUtils.isPlaceholderArtist(track.artist)) score += 20
+            if (!MetadataUtils.isPlaceholderTitle(track.title)) score += 15
+            if (track.trackNumber > 0) score += 10
+            if (track.year > 0) score += 5
+            if (hasValidArtwork(track)) score += 5
+            score
+        } ?: tracks.first()
+    }
+
+    /**
+     * Enriches an entire album group using a single lookup.
+     * 1. Uses the anchor track to identify the album
+     * 2. Applies consistent album identity to all tracks in the group
+     * 3. Per-track verification ensures unrelated tracks are not forced
+     */
+    private suspend fun enrichAlbumGroup(group: AlbumGroup) {
+        val anchor = group.anchorTrack
+        Log.i(TAG, "ALBUM_GROUP: Enriching group '${group.groupKey}' with ${group.tracks.size} tracks, anchor='${anchor.title}' by '${anchor.artist}'")
+
+        // Mark all tracks as ENRICHING
+        val now = System.currentTimeMillis()
+        for (track in group.tracks) {
+            if (inFlightTrackIds.add(track.id)) {
+                trackDao.update(track.copy(
+                    metadataStatus = MetadataStatus.ENRICHING,
+                    metadataLastUpdated = now,
+                ))
+            }
+        }
+
+        try {
+            // Build search query from anchor
+            val query = buildSearchQuery(anchor)
+            if (query.isBlank()) {
+                Log.d(TAG, "Cannot construct query for album group anchor ${anchor.id}")
+                finishAlbumGroupTracks(group, null, null)
+                return
+            }
+
+            if (!isNetworkAvailable()) {
+                Log.d(TAG, "Network unavailable for album group enrichment")
+                finishAlbumGroupTracks(group, null, null)
+                return
+            }
+
+            Log.i("DIAG_METADATA", "ALBUM_GROUP_QUERY: '$query'")
+            val searchResults = try {
+                metadataProvider.searchTrack(query, limit = 10)
+            } catch (e: Exception) {
+                Log.w(TAG, "Provider lookup failed for album group '$query': ${e.message}")
+                if (e.message?.contains("rate limit", ignoreCase = true) == true) {
+                    delay(3000L)
+                }
+                finishAlbumGroupTracks(group, null, null)
+                return
+            }
+
+            if (searchResults.isEmpty()) {
+                finishAlbumGroupTracks(group, null, null)
+                return
+            }
+
+            // Find best album match using anchor
+            val (bestMatch, confidence) = findBestMatch(anchor, searchResults)
+
+            if (bestMatch == null || confidence == MetadataConfidence.LOW) {
+                Log.d(TAG, "ALBUM_GROUP: Low confidence match for group '${group.groupKey}'")
+                // Mark all tracks as NEEDS_REVIEW
+                for (track in group.tracks) {
+                    val current = trackDao.getTrackById(track.id) ?: track
+                    trackDao.update(current.copy(
+                        metadataStatus = MetadataStatus.NEEDS_REVIEW,
+                        metadataConfidence = MetadataConfidence.LOW,
+                        metadataLastUpdated = System.currentTimeMillis(),
+                    ))
+                    inFlightTrackIds.remove(track.id)
+                }
+                return
+            }
+
+            // Apply album-level metadata to all verified tracks
+            val albumTitle = bestMatch.albumTitle ?: anchor.albumTitle
+            val albumArtist = bestMatch.albumArtist ?: bestMatch.artist
+            val canonicalAlbumId = MetadataUtils.generateAlbumId(albumArtist, albumTitle)
+            val albumYear = if (bestMatch.year > 0) bestMatch.year else anchor.year
+
+            // Download album artwork once for the entire group
+            var albumArtworkUri: String? = artworkStorage.getLocalArtworkUri(canonicalAlbumId)
+            if (albumArtworkUri == null && !bestMatch.artworkUrl.isNullOrBlank()) {
+                albumArtworkUri = artworkStorage.downloadAndStoreArtwork(canonicalAlbumId, bestMatch.artworkUrl)
+            }
+
+            Log.i("DIAG_METADATA", "ALBUM_GROUP_RESULT: album='$albumTitle', artist='$albumArtist', albumId=$canonicalAlbumId, artwork=$albumArtworkUri")
+
+            // Apply to each track with per-track verification
+            for (track in group.tracks) {
+                try {
+                    val current = trackDao.getTrackById(track.id) ?: track
+                    val isCompatible = verifyTrackBelongsToAlbum(current, bestMatch, searchResults)
+
+                    if (isCompatible) {
+                        val enriched = applyAlbumGroupMetadata(
+                            current, bestMatch, canonicalAlbumId, albumTitle, albumArtist,
+                            albumYear, albumArtworkUri, confidence
+                        )
+                        trackDao.update(enriched)
+                        updateAlbumAndArtistEntities(enriched)
+                        Log.i("DIAG_METADATA", "ALBUM_GROUP_TRACK_OK: track=${enriched.id} title='${enriched.title}' -> album='${enriched.albumTitle}'")
+                    } else {
+                        // Track doesn't belong — enrich individually or mark for review
+                        Log.i("DIAG_METADATA", "ALBUM_GROUP_TRACK_REJECT: track=${current.id} title='${current.title}' doesn't match album '$albumTitle'")
+                        enrichTrackInternal(current, forceRefresh = false)
+                    }
+                } finally {
+                    inFlightTrackIds.remove(track.id)
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Album group enrichment failed: ${e.message}")
+            finishAlbumGroupTracks(group, null, null)
+        }
+    }
+
+    private suspend fun finishAlbumGroupTracks(group: AlbumGroup, status: String?, confidence: String?) {
+        for (track in group.tracks) {
+            try {
+                val current = trackDao.getTrackById(track.id) ?: track
+                trackDao.update(current.copy(
+                    metadataStatus = status ?: MetadataStatus.FAILED,
+                    metadataConfidence = confidence ?: MetadataConfidence.LOW,
+                    metadataLastUpdated = System.currentTimeMillis(),
+                ))
+            } finally {
+                inFlightTrackIds.remove(track.id)
+            }
+        }
+    }
+
+    /**
+     * Verifies that a track is compatible with the album match.
+     * Checks title, artist, and duration signals.
+     */
+    private fun verifyTrackBelongsToAlbum(track: Track, albumMatch: RemoteTrackMetadata, allResults: List<RemoteTrackMetadata>): Boolean {
+        val trackTitleNorm = MetadataUtils.normalizeString(track.title)
+        val trackArtistNorm = MetadataUtils.normalizeString(track.artist)
+
+        // Check if any result from the same album matches this track
+        val albumTitleNorm = MetadataUtils.normalizeString(albumMatch.albumTitle ?: "")
+        val albumResults = allResults.filter { MetadataUtils.normalizeString(it.albumTitle ?: "") == albumTitleNorm }
+
+        for (candidate in albumResults) {
+            val candidateTitleNorm = MetadataUtils.normalizeString(candidate.title)
+            val titleMatch = candidateTitleNorm == trackTitleNorm ||
+                    candidateTitleNorm.contains(trackTitleNorm) ||
+                    trackTitleNorm.contains(candidateTitleNorm)
+
+            if (titleMatch) return true
+        }
+
+        // If the track title is a placeholder, it's compatible if artist matches
+        if (MetadataUtils.isPlaceholderTitle(track.title)) {
+            return !MetadataUtils.isPlaceholderArtist(track.artist) &&
+                    (trackArtistNorm.contains(MetadataUtils.normalizeString(albumMatch.artist)) ||
+                     MetadataUtils.normalizeString(albumMatch.artist).contains(trackArtistNorm))
+        }
+
+        // For poorly tagged files, check if file is in the same folder (already grouped)
+        // and the album match seems reasonable
+        val hints = MetadataUtils.parseFilenameHints(track.path ?: track.uri)
+        val hintTitleNorm = MetadataUtils.normalizeString(hints.titleHint)
+        for (candidate in albumResults) {
+            val candidateTitleNorm = MetadataUtils.normalizeString(candidate.title)
+            if (candidateTitleNorm.contains(hintTitleNorm) || hintTitleNorm.contains(candidateTitleNorm)) {
+                return true
+            }
+        }
+
+        return false
+    }
+
+    /**
+     * Applies album-group metadata to a single track, preserving valid embedded fields.
+     */
+    private fun applyAlbumGroupMetadata(
+        track: Track,
+        match: RemoteTrackMetadata,
+        albumId: Long,
+        albumTitle: String,
+        albumArtist: String,
+        albumYear: Int,
+        albumArtworkUri: String?,
+        confidence: String,
+    ): Track {
+        val hasGenuineEmbeddedTitle = track.metadataSource == MetadataSource.EMBEDDED &&
+                !MetadataUtils.isPlaceholderTitle(track.title) &&
+                !track.title.contains(" - ")
+
+        val hasGenuineEmbeddedArtist = track.metadataSource == MetadataSource.EMBEDDED &&
+                !MetadataUtils.isPlaceholderArtist(track.artist)
+
+        val hasGenuineEmbeddedAlbum = track.metadataSource == MetadataSource.EMBEDDED &&
+                !MetadataUtils.isPlaceholderAlbum(track.albumTitle)
+
+        // For title/artist: preserve embedded, use individual match if available
+        val finalTitle = if (hasGenuineEmbeddedTitle) track.title else {
+            if (!MetadataUtils.isPlaceholderTitle(track.title)) track.title else match.title
+        }
+        val finalArtist = if (hasGenuineEmbeddedArtist) track.artist else {
+            if (!MetadataUtils.isPlaceholderArtist(track.artist)) track.artist else match.artist
+        }
+
+        // For album-level fields: use the group's canonical values
+        val finalAlbumTitle = if (hasGenuineEmbeddedAlbum) track.albumTitle else albumTitle
+        val finalAlbumArtist = albumArtist
+
+        val finalTrackNumber = if (track.trackNumber > 0) track.trackNumber else match.trackNumber
+        val finalDiscNumber = if (track.discNumber > 0) track.discNumber else match.discNumber
+        val finalYear = if (track.year > 0) track.year else albumYear
+        val finalGenre = if (!track.genre.isNullOrBlank()) track.genre else match.genre
+        val finalComposer = if (!track.composer.isNullOrBlank()) track.composer else match.composer
+
+        val finalArtworkUri = when {
+            hasValidArtwork(track) -> track.artworkUri
+            albumArtworkUri != null -> albumArtworkUri
+            else -> track.artworkUri
+        }
+
+        val hadAnyEmbedded = hasGenuineEmbeddedTitle || hasGenuineEmbeddedArtist || hasGenuineEmbeddedAlbum || hasValidArtwork(track)
+        val externalFilledSomething = (!hasGenuineEmbeddedTitle && match.title.isNotBlank()) ||
+                (!hasGenuineEmbeddedArtist && match.artist.isNotBlank()) ||
+                (!hasGenuineEmbeddedAlbum && albumTitle.isNotBlank()) ||
+                (track.artworkUri == null && finalArtworkUri != null)
+
+        val metadataSource = when {
+            hadAnyEmbedded && externalFilledSomething -> MetadataSource.MERGED
+            externalFilledSomething -> MetadataSource.EXTERNAL
+            else -> MetadataSource.EMBEDDED
+        }
+
+        val isNowComplete = !MetadataUtils.isPlaceholderTitle(finalTitle) &&
+                !MetadataUtils.isPlaceholderArtist(finalArtist) &&
+                !MetadataUtils.isPlaceholderAlbum(finalAlbumTitle) &&
+                !MetadataUtils.isPlaceholderArtist(finalAlbumArtist) &&
+                finalArtworkUri != null
+
+        val metadataStatus = if (isNowComplete) MetadataStatus.COMPLETE else MetadataStatus.PARTIAL
+
+        return track.copy(
+            title = finalTitle,
+            artist = finalArtist,
+            albumArtist = finalAlbumArtist,
+            albumTitle = finalAlbumTitle,
+            albumId = albumId,
+            trackNumber = finalTrackNumber,
+            discNumber = finalDiscNumber,
+            year = finalYear,
+            genre = finalGenre,
+            composer = finalComposer,
+            artworkUri = finalArtworkUri,
+            metadataSource = metadataSource,
+            metadataStatus = metadataStatus,
+            metadataConfidence = confidence,
+            metadataLastUpdated = System.currentTimeMillis(),
+        )
+    }
+
+    // ── Individual Track Enrichment ───────────────────────────
+
     private suspend fun enrichTrackInternal(track: Track, forceRefresh: Boolean): Track {
         // Diagnostic Points 14 & 15
         val isEnrichmentNeeded = needsEnrichment(track)
@@ -210,7 +580,7 @@ class MetadataEnrichmentService @Inject constructor(
             return offlineTrack
         }
 
-        // Step 3: Construct search query using cleaned artist and title hints
+        // Step 3: Construct search query — EMBEDDED METADATA FIRST, then filename hints
         val query = buildSearchQuery(currentTrack)
         if (query.isBlank()) {
             Log.d(TAG, "Cannot construct query for track ${currentTrack.id}.")
@@ -277,28 +647,50 @@ class MetadataEnrichmentService @Inject constructor(
 
     /**
      * Builds the most specific search query possible from available metadata and filename hints.
+     * PRIORITY: valid embedded metadata FIRST, then filename hints as fallback.
      */
     fun buildSearchQuery(track: Track): String {
-        val hints = MetadataUtils.parseFilenameHints(track.path ?: track.uri)
         val hasArtist = !MetadataUtils.isPlaceholderArtist(track.artist)
         val hasTitle = !MetadataUtils.isPlaceholderTitle(track.title)
+        val hints = MetadataUtils.parseFilenameHints(track.path ?: track.uri)
 
         return when {
-            hints.artistHint != null && hints.titleHint.isNotBlank() ->
-                "${hints.artistHint} ${hints.titleHint}"
+            // HIGHEST PRIORITY: Valid embedded metadata
             hasArtist && hasTitle ->
                 "${MetadataUtils.cleanNoise(track.artist)} ${MetadataUtils.cleanNoise(track.title)}"
-            hints.titleHint.isNotBlank() ->
-                hints.titleHint
+            // SECOND: Cleaned/normalized existing metadata + filename hints
+            hasTitle && hints.artistHint != null ->
+                "${hints.artistHint} ${MetadataUtils.cleanNoise(track.title)}"
+            hasArtist && hints.titleHint.isNotBlank() ->
+                "${MetadataUtils.cleanNoise(track.artist)} ${hints.titleHint}"
+            // THIRD: Filename hints only
+            hints.artistHint != null && hints.titleHint.isNotBlank() ->
+                "${hints.artistHint} ${hints.titleHint}"
             hasTitle ->
                 MetadataUtils.cleanNoise(track.title)
+            hints.titleHint.isNotBlank() ->
+                hints.titleHint
+            // LAST RESORT: Whatever the filename parsing could extract
             else ->
                 hints.cleanSearchQuery
         }.trim()
     }
 
+    // ── Generic Title Detection ──────────────────────────────
+    private val GENERIC_TITLES = setOf(
+        "intro", "introduction", "interlude", "outro", "untitled",
+        "track", "instrumental", "bonus", "skit", "prelude",
+    )
+
+    private fun isGenericTitle(title: String): Boolean {
+        val norm = MetadataUtils.normalizeString(title)
+        return norm in GENERIC_TITLES || norm.matches(Regex("""track\s*\d+"""))
+    }
+
     /**
      * Scores candidates and assigns a Confidence level (HIGH, MEDIUM, LOW).
+     * Requires meaningful identity evidence from at least one strong signal (title or artist).
+     * Duration alone NEVER establishes identity.
      */
     fun findBestMatch(
         track: Track,
@@ -308,6 +700,8 @@ class MetadataEnrichmentService @Inject constructor(
 
         var bestCandidate: RemoteTrackMetadata? = null
         var highestScore = -100
+        var bestTitleMatched = false
+        var bestArtistMatched = false
 
         val hints = MetadataUtils.parseFilenameHints(track.path ?: track.uri)
         val targetArtist = if (!MetadataUtils.isPlaceholderArtist(track.artist)) track.artist else hints.artistHint
@@ -321,14 +715,22 @@ class MetadataEnrichmentService @Inject constructor(
 
         for (candidate in candidates) {
             var score = 0
+            var titleMatched = false
+            var artistMatched = false
             val candidateTitleNorm = MetadataUtils.normalizeString(candidate.title)
             val candidateArtistNorm = MetadataUtils.normalizeString(candidate.artist)
 
             // Title Matching
             if (isTitleKnown) {
                 when {
-                    candidateTitleNorm == targetTitleNorm -> score += 50
-                    candidateTitleNorm.contains(targetTitleNorm) || targetTitleNorm.contains(candidateTitleNorm) -> score += 40
+                    candidateTitleNorm == targetTitleNorm -> {
+                        score += 50
+                        titleMatched = true
+                    }
+                    candidateTitleNorm.contains(targetTitleNorm) || targetTitleNorm.contains(candidateTitleNorm) -> {
+                        score += 40
+                        titleMatched = true
+                    }
                     else -> score -= 25
                 }
             }
@@ -336,29 +738,61 @@ class MetadataEnrichmentService @Inject constructor(
             // Artist Matching
             if (isArtistKnown) {
                 when {
-                    candidateArtistNorm == targetArtistNorm -> score += 40
-                    candidateArtistNorm.contains(targetArtistNorm) || targetArtistNorm.contains(candidateArtistNorm) -> score += 30
+                    candidateArtistNorm == targetArtistNorm -> {
+                        score += 40
+                        artistMatched = true
+                    }
+                    candidateArtistNorm.contains(targetArtistNorm) || targetArtistNorm.contains(candidateArtistNorm) -> {
+                        score += 30
+                        artistMatched = true
+                    }
                     else -> score -= 20
                 }
             }
 
-            // Duration Matching (if available)
+            // Album Matching (supporting signal)
+            if (!MetadataUtils.isPlaceholderAlbum(track.albumTitle) && !candidate.albumTitle.isNullOrBlank()) {
+                val trackAlbumNorm = MetadataUtils.normalizeString(track.albumTitle)
+                val candidateAlbumNorm = MetadataUtils.normalizeString(candidate.albumTitle!!)
+                if (trackAlbumNorm == candidateAlbumNorm || trackAlbumNorm.contains(candidateAlbumNorm) || candidateAlbumNorm.contains(trackAlbumNorm)) {
+                    score += 15
+                }
+            }
+
+            // Duration Matching (SUPPORTING signal, never primary)
             if (track.duration > 0 && candidate.durationMs > 0) {
                 val diffSeconds = abs(track.duration - candidate.durationMs) / 1000
                 when {
-                    diffSeconds <= 5 -> score += 20
-                    diffSeconds <= 15 -> score += 10
+                    diffSeconds <= 5 -> score += 15
+                    diffSeconds <= 15 -> score += 8
                     diffSeconds > 90 -> score -= 20
                 }
+            }
+
+            // Generic title penalty
+            if (isTitleKnown && isGenericTitle(targetTitleNorm)) {
+                score -= 15
             }
 
             if (score > highestScore) {
                 highestScore = score
                 bestCandidate = candidate
+                bestTitleMatched = titleMatched
+                bestArtistMatched = artistMatched
             }
         }
 
+        // MINIMUM IDENTITY REQUIREMENT:
+        // At least one strong identity signal (title or artist) must have matched.
+        // Duration alone is NEVER sufficient.
+        val hasIdentityEvidence = bestTitleMatched || bestArtistMatched
+
+        // Generic title without artist match cannot be HIGH confidence
+        val isGenericWithoutArtist = isGenericTitle(targetTitleNorm) && !bestArtistMatched
+
         val confidence = when {
+            !hasIdentityEvidence -> MetadataConfidence.LOW
+            isGenericWithoutArtist -> if (highestScore >= 25) MetadataConfidence.MEDIUM else MetadataConfidence.LOW
             highestScore >= 45 -> MetadataConfidence.HIGH
             highestScore >= 25 -> MetadataConfidence.MEDIUM
             else -> MetadataConfidence.LOW
@@ -395,7 +829,8 @@ class MetadataEnrichmentService @Inject constructor(
         val finalAlbumTitle = if (hasGenuineEmbeddedAlbum) local.albumTitle else (remote.albumTitle ?: local.albumTitle)
         val finalAlbumArtist = if (hasGenuineEmbeddedAlbumArtist) local.albumArtist else (remote.albumArtist ?: finalArtist)
         val finalTrackNumber = if (local.trackNumber > 0) local.trackNumber else remote.trackNumber
-        val finalDiscNumber = if (local.discNumber > 1) local.discNumber else remote.discNumber
+        // FIX: discNumber > 0 (not > 1) — disc 1 is valid metadata
+        val finalDiscNumber = if (local.discNumber > 0) local.discNumber else remote.discNumber
         val finalYear = if (local.year > 0) local.year else remote.year
         val finalGenre = if (!local.genre.isNullOrBlank()) local.genre else remote.genre
         val finalComposer = if (!local.composer.isNullOrBlank()) local.composer else remote.composer

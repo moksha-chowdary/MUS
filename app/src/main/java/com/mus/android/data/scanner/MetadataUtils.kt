@@ -159,6 +159,32 @@ object MetadataUtils {
         return generateDeterministicId("track_path:$relative")
     }
 
+    /**
+     * Returns a normalized, lowercased Muzic-relative path for reconciliation lookups.
+     * Used for case-insensitive matching when migrating from old unstable IDs.
+     */
+    fun normalizeForLookup(pathOrUri: String?): String? {
+        if (pathOrUri.isNullOrBlank()) return null
+        val relative = extractMuzicRelativePath(pathOrUri) ?: return null
+        return relative.lowercase().replace('\\', '/').trim()
+    }
+
+    /**
+     * Extracts the album-level folder path from a track's path.
+     * For /Muzic/English/AlbumName/song.mp3 → "English/AlbumName"
+     * For /Muzic/English/song.mp3 → "English"
+     * For /Muzic/song.mp3 → null (root, no album folder)
+     * Used for album grouping when embedded metadata is insufficient.
+     */
+    fun extractAlbumFolderPath(pathOrUri: String?): String? {
+        if (pathOrUri.isNullOrBlank()) return null
+        val relative = extractMuzicRelativePath(pathOrUri) ?: return null
+        val clean = relative.trim().removePrefix("/")
+        val lastSlash = clean.lastIndexOf('/')
+        if (lastSlash <= 0) return null // File at root or no directory structure
+        return clean.substring(0, lastSlash)
+    }
+
     data class FilenameHints(
         val artistHint: String?,
         val titleHint: String,
