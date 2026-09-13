@@ -75,13 +75,6 @@ fun HomeScreen(
     val quickPickPages = remember(quickPicks) { quickPicks.chunked(4) }
     val quickPickPagerState = rememberPagerState(pageCount = { quickPickPages.size })
 
-    val systemPlaylists = remember(playlists) {
-        playlists.filter { it.isSystemPlaylist || com.mus.android.data.classifier.LanguageClassifier.isDefaultPlaylist(it.name) }
-    }
-    val userPlaylists = remember(playlists) {
-        playlists.filter { !it.isSystemPlaylist }
-    }
-
     var selectedTrackForMenu by remember { mutableStateOf<Track?>(null) }
 
     val context = LocalContext.current
@@ -481,11 +474,11 @@ fun HomeScreen(
                         item { Spacer(Modifier.height(Spacing.xl)) }
                     }
 
-                    // 2. LANGUAGE MIXES (Telugu, Tamil, Hindi, English, Other)
-                    if (systemPlaylists.isNotEmpty()) {
+                    // 2. PLAYLISTS (Folder-derived playlists: English, Telugu, Hindi, etc.)
+                    if (playlists.isNotEmpty()) {
                         item {
                             Text(
-                                "Language Mixes",
+                                "Playlists",
                                 style = MaterialTheme.typography.titleMedium,
                                 color = MusColors.OnBackground,
                                 modifier = Modifier.padding(horizontal = Spacing.base),
@@ -497,13 +490,14 @@ fun HomeScreen(
                                 contentPadding = PaddingValues(horizontal = Spacing.base),
                                 horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
                             ) {
-                                items(systemPlaylists, key = { it.id }) { pl ->
+                                items(playlists, key = { it.id }) { pl ->
                                     val tag = when {
                                         pl.name.contains("Telugu", ignoreCase = true) || pl.systemKey == "TELUGU" -> "TE"
                                         pl.name.contains("Tamil", ignoreCase = true) || pl.systemKey == "TAMIL" -> "TA"
                                         pl.name.contains("Hindi", ignoreCase = true) || pl.systemKey == "HINDI" -> "HI"
                                         pl.name.contains("English", ignoreCase = true) || pl.systemKey == "ENGLISH" -> "EN"
-                                        else -> "MIX"
+                                        pl.name.length <= 3 -> pl.name.uppercase()
+                                        else -> pl.name.take(3).uppercase()
                                     }
                                     Column(
                                         modifier = Modifier
@@ -529,7 +523,7 @@ fun HomeScreen(
                                             overflow = TextOverflow.Ellipsis
                                         )
                                         Text(
-                                            "Auto-mix",
+                                            "Playlist",
                                             style = MaterialTheme.typography.bodySmall,
                                             color = MusColors.OnBackgroundSecondary
                                         )
@@ -562,35 +556,6 @@ fun HomeScreen(
                                         artist = album.artist,
                                         artworkUri = album.artworkUri,
                                         onClick = { onAlbumClick(album.id) },
-                                    )
-                                }
-                            }
-                            Spacer(Modifier.height(Spacing.xl))
-                        }
-                    }
-
-                    // 4. PLAYLISTS (User custom playlists)
-                    if (userPlaylists.isNotEmpty()) {
-                        item {
-                            Text(
-                                "Playlists",
-                                style = MaterialTheme.typography.titleMedium,
-                                color = MusColors.OnBackground,
-                                modifier = Modifier.padding(horizontal = Spacing.base),
-                            )
-                            Spacer(Modifier.height(Spacing.sm))
-                        }
-                        item {
-                            LazyRow(
-                                contentPadding = PaddingValues(horizontal = Spacing.base),
-                                horizontalArrangement = Arrangement.spacedBy(Spacing.md),
-                            ) {
-                                items(userPlaylists, key = { it.id }) { pl ->
-                                    PlaylistCard(
-                                        name = pl.name,
-                                        trackCount = 0,
-                                        artworkUri = null,
-                                        onClick = { onPlaylistClick(pl.id) },
                                     )
                                 }
                             }

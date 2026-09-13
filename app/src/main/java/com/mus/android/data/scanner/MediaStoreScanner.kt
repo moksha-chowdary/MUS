@@ -741,6 +741,55 @@ class MediaStoreScanner @Inject constructor(
         }
     }
 
+    /**
+     * Discovers direct child directories under the Muzic root (via direct filesystem
+     * traversal and/or SAF tree query).
+     */
+    fun discoverDirectFolders(targetUri: Uri? = null): Set<String> {
+        val folders = mutableSetOf<String>()
+        // 1. Direct filesystem check
+        try {
+            val muzicDir = getMuzicDirectory()
+            if (muzicDir.exists() && muzicDir.isDirectory) {
+                muzicDir.listFiles { file -> file.isDirectory }?.forEach { sub ->
+                    val name = sub.name.trim()
+                    if (name.isNotBlank() && !name.startsWith(".")) {
+                        folders.add(name)
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to inspect direct folders from Muzic directory", e)
+        }
+
+        // 2. SAF tree query if a custom SAF URI is provided
+        if (targetUri != null) {
+            try {
+                val docId = DocumentsContract.getTreeDocumentId(targetUri)
+                val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(targetUri, docId)
+                val projection = arrayOf(
+                    DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                    DocumentsContract.Document.COLUMN_MIME_TYPE
+                )
+                context.contentResolver.query(childrenUri, projection, null, null, null)?.use { cursor ->
+                    val nameCol = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
+                    val mimeCol = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_MIME_TYPE)
+                    while (cursor.moveToNext()) {
+                        val mime = cursor.getString(mimeCol) ?: ""
+                        val name = cursor.getString(nameCol) ?: ""
+                        if (mime == DocumentsContract.Document.MIME_TYPE_DIR && name.isNotBlank() && !name.startsWith(".")) {
+                            folders.add(name.trim())
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to query direct folders from SAF tree: $targetUri", e)
+            }
+        }
+
+        return folders
+    }
+
     companion object {
         private const val TAG = "MediaStoreScanner"
         val SUPPORTED_AUDIO_EXTENSIONS = setOf("mp3", "flac", "m4a", "aac", "wav", "ogg", "opus", "alac")

@@ -127,6 +127,26 @@ object MetadataUtils {
     }
 
     /**
+     * Extracts the direct child folder name under Muzic/ for a given path or URI.
+     * Returns the top-level folder name (e.g. "English" for "Muzic/English/song.flac" or
+     * "Muzic/English/Pop/song.flac").
+     * Returns null if the file is directly in the Muzic/ root directory (e.g. "Muzic/song.flac")
+     * or if no valid relative path can be resolved.
+     */
+    fun extractMuzicDirectFolder(pathOrUri: String?): String? {
+        if (pathOrUri.isNullOrBlank()) return null
+        val relative = extractMuzicRelativePath(pathOrUri) ?: return null
+        val clean = relative.trim().removePrefix("/").removePrefix("\\")
+        val slashIdx = clean.indexOfAny(charArrayOf('/', '\\'))
+        if (slashIdx <= 0) {
+            // File is at root of Muzic (e.g. "random_song.flac"), not in any subfolder
+            return null
+        }
+        val folder = clean.substring(0, slashIdx).trim()
+        return if (folder.isNotBlank()) folder else null
+    }
+
+    /**
      * Generates a stable, deterministic track ID from a file path.
      * Uses the Muzic-relative path so the same physical file always gets the same ID
      * regardless of whether MediaStore, SAF, or direct directory scan discovers it.

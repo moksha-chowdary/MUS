@@ -31,56 +31,141 @@ class MusicRepository @Inject constructor(
 
     init {
         CoroutineScope(Dispatchers.IO).launch {
-            ensureDefaultPlaylists()
+            reconcileFolderPlaylists()
         }
     }
 
     suspend fun ensureDefaultPlaylists() = withContext(Dispatchers.IO) {
-        for (def in com.mus.android.data.classifier.LanguageClassifier.SYSTEM_PLAYLISTS) {
-            val existing = playlistDao.getPlaylistBySystemKey(def.systemKey)
-                ?: playlistDao.getPlaylistByName(def.name)
-            if (existing == null) {
-                playlistDao.insertPlaylist(
-                    Playlist(
-                        name = def.name,
-                        systemKey = def.systemKey,
-                        isSystemPlaylist = true
-                    )
-                )
-            } else if (existing.systemKey != def.systemKey || !existing.isSystemPlaylist) {
-                playlistDao.updatePlaylist(
-                    existing.copy(
-                        systemKey = def.systemKey,
-                        isSystemPlaylist = true
-                    )
-                )
-            }
-        }
+        reconcileFolderPlaylists()
     }
 
     suspend fun reconcileLanguagePlaylists(tracks: List<Track>) = withContext(Dispatchers.IO) {
-        if (tracks.isEmpty()) return@withContext
-        ensureDefaultPlaylists()
+        reconcileFolderPlaylists(tracks)
+    }
 
-        val tracksBySystemKey = tracks.groupBy { track ->
-            com.mus.android.data.classifier.LanguageClassifier.languageToSystemKey(track.language)
+    suspend fun reconcileFolderPlaylists(
+        tracks: List<Track> = emptyList(),
+        targetUri: android.net.Uri? = null
+    ) = withContext(Dispatchers.IO) {
+        val uri = targetUri ?: userPreferences.customMuzicUri.value?.let { android.net.Uri.parse(it) }
+        val allTracks = if (tracks.isNotEmpty()) tracks else trackDao.getAllTracksOnce()
+        val discoveredFolders = scanner.discoverDirectFolders(uri).toMutableSet()
+
+        // Also discover folders from track paths or URIs
+        for (track in allTracks) {
+            val folder = com.mus.android.data.scanner.MetadataUtils.extractMuzicDirectFolder(track.path ?: track.uri)
+            if (folder != null) {
+                discoveredFolders.add(folder)
+            }
         }
 
-        for ((systemKey, groupTracks) in tracksBySystemKey) {
-            val playlist = playlistDao.getPlaylistBySystemKey(systemKey) ?: continue
-            val existingTrackIds = playlistDao.getTrackIdsForPlaylist(playlist.id).toSet()
-            val newTracksToAdd = groupTracks.filter { it.id !in existingTrackIds }
-            if (newTracksToAdd.isEmpty()) continue
+        // If no tracks exist and no folders could be discovered (e.g. before initial scan or permission grant), do nothing
+        if (allTracks.isEmpty() && discoveredFolders.isEmpty()) return@withContext
 
-            var position = existingTrackIds.size
-            val playlistTracks = newTracksToAdd.map { track ->
-                PlaylistTrack(
-                    playlistId = playlist.id,
-                    trackId = track.id,
-                    position = position++,
-                )
+        // Map tracks strictly by their direct Muzic folder
+        val tracksByFolder = mutableMapOf<String, MutableList<Track>>()
+        for (folder in discoveredFolders) {
+            tracksByFolder[folder] = mutableListOf()
+        }
+        for (track in allTracks) {
+            val folder = com.mus.android.data.scanner.MetadataUtils.extractMuzicDirectFolder(track.path ?: track.uri)
+            if (folder != null) {
+                tracksByFolder.getOrPut(folder) { mutableListOf() }.add(track)
             }
-            playlistDao.insertPlaylistTracks(playlistTracks)
+        }
+
+        database.withTransaction {
+            val existingPlaylists = playlistDao.getAllPlaylistsOnce()
+            val validFolderNamesLower = discoveredFolders.map { it.lowercase() }.toSet()
+
+            // 1. Remove stale playlists (e.g., deleted folders or old hardcoded/system playlists)
+            // and deduplicate playlists with the same name
+            val existingByName = existingPlaylists.groupBy { it.name.lowercase() }
+            val activePlaylistsByName = mutableMapOf<String, Playlist>()
+
+            for ((nameLower, pls) in existingByName) {
+                if (nameLower !in validFolderNamesLower) {
+                    // Stale playlist
+                    for (pl in pls) {
+                        playlistDao.clearPlaylistTracks(pl.id)
+                        playlistDao.deletePlaylistById(pl.id)
+                    }
+                } else {
+                    // Keep the first one, delete any duplicate rows with the same name
+                    activePlaylistsByName[nameLower] = pls.first()
+                    if (pls.size > 1) {
+                        for (pl in pls.drop(1)) {
+                            playlistDao.clearPlaylistTracks(pl.id)
+                            playlistDao.deletePlaylistById(pl.id)
+                        }
+                    }
+                }
+            }
+
+            // 2. Ensure each discovered folder has a corresponding Playlist
+            val folderPlaylists = mutableMapOf<String, Playlist>()
+            for (folder in discoveredFolders) {
+                val existing = activePlaylistsByName[folder.lowercase()]
+                val playlist = if (existing != null) {
+                    // Update name casing if changed
+                    if (existing.name != folder || existing.isSystemPlaylist || existing.systemKey != null) {
+                        val updated = existing.copy(
+                            name = folder,
+                            isSystemPlaylist = false,
+                            systemKey = null,
+                            updatedAt = System.currentTimeMillis()
+                        )
+                        playlistDao.updatePlaylist(updated)
+                        updated
+                    } else {
+                        existing
+                    }
+                } else {
+                    val newId = playlistDao.insertPlaylist(
+                        Playlist(
+                            name = folder,
+                            isSystemPlaylist = false,
+                            systemKey = null,
+                            createdAt = System.currentTimeMillis(),
+                            updatedAt = System.currentTimeMillis()
+                        )
+                    )
+                    playlistDao.getPlaylistById(newId) ?: Playlist(id = newId, name = folder)
+                }
+                folderPlaylists[folder] = playlist
+            }
+
+            // 3. Reconcile track memberships for each folder
+            for ((folder, folderTracks) in tracksByFolder) {
+                val playlist = folderPlaylists[folder] ?: continue
+
+                // Stable deterministic ordering: trackNumber -> title -> id
+                val sortedTracks = folderTracks.sortedWith(
+                    compareBy<Track> { if (it.trackNumber > 0) it.trackNumber else Int.MAX_VALUE }
+                        .thenBy(String.CASE_INSENSITIVE_ORDER) { it.title }
+                        .thenBy { it.id }
+                )
+                val expectedTrackIds = sortedTracks.map { it.id }
+                val currentTrackIds = playlistDao.getTrackIdsForPlaylist(playlist.id)
+
+                // If membership or ordering differs, update playlist_tracks
+                if (currentTrackIds != expectedTrackIds) {
+                    playlistDao.clearPlaylistTracks(playlist.id)
+                    if (sortedTracks.isNotEmpty()) {
+                        var position = 0
+                        val playlistTracks = sortedTracks.map { track ->
+                            PlaylistTrack(
+                                playlistId = playlist.id,
+                                trackId = track.id,
+                                position = position++,
+                                addedAt = System.currentTimeMillis()
+                            )
+                        }
+                        playlistDao.insertPlaylistTracks(playlistTracks)
+                    }
+                    playlistDao.updatePlaylist(playlist.copy(updatedAt = System.currentTimeMillis()))
+                }
+            }
         }
     }
 
@@ -271,8 +356,8 @@ class MusicRepository @Inject constructor(
             _idMigrations.tryEmit(migratedIds)
         }
 
-        // Automatically organize tracks into Telugu, Tamil, Hindi, English, and Other system playlists
-        reconcileLanguagePlaylists(mergedTracks)
+        // Automatically organize tracks into folder-derived playlists (English, Telugu, Hindi, etc.)
+        reconcileFolderPlaylists(mergedTracks, targetUri)
 
         // Use metadataStatus as the state machine to filter enrichment queue (Requirement 3)
         val tracksNeedingEnrichment = mergedTracks.filter { track ->
