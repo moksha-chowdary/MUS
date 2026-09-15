@@ -88,7 +88,7 @@ class MetadataEnrichmentTest {
     // 2. Partially tagged file: Missing fields are enriched
     @Test
     fun testPartiallyTaggedFileEnrichesMissingFields() = runBlocking {
-        artworkStorage.saveEmbeddedArtwork(202L, "album_artwork_bytes".toByteArray())
+        val embeddedUri = artworkStorage.saveEmbeddedArtworkForTrack(102L, "album_artwork_bytes".toByteArray())
 
         val partialTrack = Track(
             id = 102L,
@@ -99,7 +99,7 @@ class MetadataEnrichmentTest {
             duration = 200000L,
             uri = "/Muzic/02.mp3",
             path = "/Muzic/02.mp3",
-            artworkUri = null,
+            artworkUri = embeddedUri,
             year = 0,
             genre = null,
         )

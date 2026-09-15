@@ -173,6 +173,7 @@ class MusicRepository @Inject constructor(
 
     // ── Scanning ──────────────────────────────────────────────
     suspend fun scanDevice(safTreeUri: android.net.Uri? = null): MediaStoreScanner.ScanResult = withContext(Dispatchers.IO) {
+        ensureArtworkForensicFixCompleted()
         ensureArtworkRollbackRebuildCompleted()
         ensureMetadataRepairV3Completed()
         ensureMetadataResetV2Completed()
@@ -781,6 +782,7 @@ class MusicRepository @Inject constructor(
             albumDao.insertAll(resetAlbums)
         }
 
+        userPreferences.setArtworkForensicFixV4Completed(true)
         userPreferences.setArtworkRollbackCompleted(true)
 
         val tracksNeedingArt = trackDao.getAllTracksOnce().filter { enrichmentService.needsEnrichment(it) }
@@ -795,6 +797,20 @@ class MusicRepository @Inject constructor(
             resetStarted = true,
             resetCompleted = true
         )
+    }
+
+    /**
+     * Ensures the one-time forensic artwork clean rebuild is executed once to purge bad/corrupted remote art.
+     */
+    suspend fun ensureArtworkForensicFixCompleted(): Boolean = withContext(Dispatchers.IO) {
+        if (!userPreferences.isArtworkForensicFixV4Completed()) {
+            userPreferences.setArtworkForensicFixV4Completed(true)
+            userPreferences.setArtworkRollbackCompleted(true)
+            rebuildArtworkCleanly()
+            true
+        } else {
+            false
+        }
     }
 
     /**

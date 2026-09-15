@@ -976,6 +976,151 @@ class MetadataRobustnessTest {
         tempDir.deleteRecursively()
     }
 
+    @Test
+    fun testIdentityGate_RejectsDurationOnlyMatch() {
+        val service = createTestEnrichmentService()
+        val localTrack = Track(
+            id = 503L,
+            title = "Dirty Diana",
+            artist = "Michael Jackson",
+            albumId = 3L,
+            albumTitle = "Bad",
+            duration = 296000L,
+            uri = "/Muzic/English/Dirty Diana.mp3",
+        )
+
+        // iTunes returns a completely different Michael Jackson song with same artist and similar duration
+        val wrongCandidate = RemoteTrackMetadata(
+            title = "Thriller",
+            artist = "Michael Jackson",
+            albumTitle = "Thriller",
+            durationMs = 295000L,
+            artworkUrl = "https://example.com/thriller.jpg",
+        )
+
+        val (bestMatch, confidence) = service.findBestMatch(localTrack, listOf(wrongCandidate))
+        assertNull("Duration similarity must NEVER rescue a title mismatch", bestMatch)
+        assertEquals(MetadataConfidence.LOW, confidence)
+    }
+
+    @Test
+    fun testIdentityGate_RejectsSubBandArtistMismatch() {
+        val service = createTestEnrichmentService()
+        val localTrack = Track(
+            id = 504L,
+            title = "Sing",
+            artist = "Travis",
+            albumId = 4L,
+            albumTitle = "The Invisible Band",
+            duration = 230000L,
+            uri = "/Muzic/Sing.mp3",
+        )
+
+        // Remote candidate is Travis Scott (different artist entirely, despite containing "Travis")
+        val candidate = RemoteTrackMetadata(
+            title = "Sing",
+            artist = "Travis Scott",
+            albumTitle = "Sing Single",
+            durationMs = 230000L,
+            artworkUrl = "https://example.com/art.jpg",
+        )
+
+        val (bestMatch, _) = service.findBestMatch(localTrack, listOf(candidate))
+        assertNull("Sub-string artist match 'Travis' in 'Travis Scott' must be rejected", bestMatch)
+    }
+
+    @Test
+    fun testIdentityGate_RejectsVersionMismatch() {
+        val service = createTestEnrichmentService()
+        val localTrack = Track(
+            id = 505L,
+            title = "In The End",
+            artist = "Linkin Park",
+            albumId = 5L,
+            albumTitle = "Hybrid Theory",
+            duration = 216000L,
+            uri = "/Muzic/In The End.mp3",
+        )
+
+        // Candidate is a live version when local is original
+        val liveCandidate = RemoteTrackMetadata(
+            title = "In The End (Live)",
+            artist = "Linkin Park",
+            albumTitle = "Live in Texas",
+            durationMs = 216000L,
+            artworkUrl = "https://example.com/live.jpg",
+        )
+
+        assertFalse("Live version must not be compatible with original track",
+            MetadataUtils.areVersionsCompatible(localTrack.title, liveCandidate.title))
+
+        val (bestMatch, _) = service.findBestMatch(localTrack, listOf(liveCandidate))
+        assertNull("Version mismatch (Live vs Original) must be rejected by identity gate", bestMatch)
+    }
+
+    @Test
+    fun testEmbeddedArtwork_AlwaysWinsOverRemoteArtwork() = kotlinx.coroutines.runBlocking {
+        val service = createTestEnrichmentService()
+        val embeddedUri = "file:///data/user/0/com.mus.android/files/artwork/art_embedded_999.jpg"
+
+        val trackWithEmbeddedArt = Track(
+            id = 999L,
+            title = "Blinding Lights",
+            artist = "The Weeknd",
+            albumId = 999L,
+            albumTitle = "After Hours",
+            duration = 200000L,
+            uri = "/Muzic/01.mp3",
+            path = "/Muzic/01.mp3",
+            artworkUri = embeddedUri,
+            metadataSource = MetadataSource.EMBEDDED,
+        )
+
+        val remoteCandidate = RemoteTrackMetadata(
+            title = "Blinding Lights",
+            artist = "The Weeknd",
+            albumTitle = "After Hours",
+            year = 2020,
+            genre = "R&B/Soul",
+            artworkUrl = "https://example.com/itunes_artwork.jpg",
+        )
+
+        val enriched = service.mergeMetadata(trackWithEmbeddedArt, remoteCandidate, MetadataConfidence.HIGH)
+        assertEquals("Genuine embedded artwork MUST ALWAYS WIN over remote iTunes artwork", embeddedUri, enriched.artworkUri)
+    }
+
+    @Test
+    fun testArtworkGate_LowAndMediumConfidenceProduceNullArtwork() = kotlinx.coroutines.runBlocking {
+        val service = createTestEnrichmentService()
+        val trackWithoutArt = Track(
+            id = 888L,
+            title = "Unknown Song",
+            artist = "Unknown Artist",
+            albumId = 888L,
+            albumTitle = "Unknown Album",
+            duration = 180000L,
+            uri = "/Muzic/unknown.mp3",
+            path = "/Muzic/unknown.mp3",
+            artworkUri = null,
+            metadataSource = MetadataSource.EXTERNAL,
+        )
+
+        val remoteCandidate = RemoteTrackMetadata(
+            title = "A Similar Song",
+            artist = "Similar Artist",
+            albumTitle = "Similar Album",
+            year = 2021,
+            genre = "Pop",
+            artworkUrl = "https://example.com/similar.jpg",
+        )
+
+        val enrichedMedium = service.mergeMetadata(trackWithoutArt, remoteCandidate, MetadataConfidence.MEDIUM)
+        assertNull("Medium confidence match must NOT attach remote artwork", enrichedMedium.artworkUri)
+
+        val enrichedLow = service.mergeMetadata(trackWithoutArt, remoteCandidate, MetadataConfidence.LOW)
+        assertNull("Low confidence match must NOT attach remote artwork", enrichedLow.artworkUri)
+    }
+
     // ── Helpers ───────────────────────────────────────────────
 
     private fun createTrack(
