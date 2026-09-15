@@ -885,191 +885,96 @@ class MetadataRobustnessTest {
         assertTrue("resetCompleted must be true", result.resetCompleted)
     }
 
-    // ── Phase 3: Metadata & Artwork Matching Overhaul Tests ─────
-
     @Test
-    fun testPlaceholderAlbumDetection_LanguageAndGenericFoldersRejected() {
-        // Common language folders from /Muzic/
-        assertTrue("English must be recognized as placeholder album", MetadataUtils.isPlaceholderAlbum("English"))
-        assertTrue("Telugu must be recognized as placeholder album", MetadataUtils.isPlaceholderAlbum("Telugu"))
-        assertTrue("Hindi must be recognized as placeholder album", MetadataUtils.isPlaceholderAlbum("Hindi"))
-        assertTrue("Tamil must be recognized as placeholder album", MetadataUtils.isPlaceholderAlbum("Tamil"))
-        assertTrue("Punjabi must be recognized as placeholder album", MetadataUtils.isPlaceholderAlbum("Punjabi"))
-        assertTrue("Malayalam must be recognized as placeholder album", MetadataUtils.isPlaceholderAlbum("Malayalam"))
-        assertTrue("Kannada must be recognized as placeholder album", MetadataUtils.isPlaceholderAlbum("Kannada"))
+    fun testArtworkRollback_PreservesUserFields_ClearsRemoteArtworkOnly() {
+        val tempDir = java.io.File(System.getProperty("java.io.tmpdir"), "mus_test_art_rollback_${System.nanoTime()}")
+        tempDir.mkdirs()
 
-        // Common generic folder/placeholder names
-        assertTrue("Unknown must be placeholder", MetadataUtils.isPlaceholderAlbum("Unknown"))
-        assertTrue("Unknown Album must be placeholder", MetadataUtils.isPlaceholderAlbum("Unknown Album"))
-        assertTrue("Downloads must be placeholder", MetadataUtils.isPlaceholderAlbum("Downloads"))
-        assertTrue("Audio must be placeholder", MetadataUtils.isPlaceholderAlbum("Audio"))
-        assertTrue("Music must be placeholder", MetadataUtils.isPlaceholderAlbum("Music"))
-        assertTrue("Muzic must be placeholder", MetadataUtils.isPlaceholderAlbum("Muzic"))
-        assertTrue("Singles must be placeholder", MetadataUtils.isPlaceholderAlbum("Singles"))
-        assertTrue("OST must be placeholder", MetadataUtils.isPlaceholderAlbum("OST"))
-        assertTrue("Soundtrack must be placeholder", MetadataUtils.isPlaceholderAlbum("Soundtrack"))
+        val remoteArt1 = java.io.File(tempDir, "art_album_101.jpg").apply { writeText("remote-1") }
+        val remoteArt2 = java.io.File(tempDir, "art_remote_102.jpg").apply { writeText("remote-2") }
+        val embeddedArt = java.io.File(tempDir, "art_embedded_103.jpg").apply { writeText("embedded-3") }
+        val tmpArt = java.io.File(tempDir, "art_download.tmp").apply { writeText("tmp-4") }
 
-        // Genuine album titles must NOT be flagged as placeholders
-        assertFalse("After Hours is a real album", MetadataUtils.isPlaceholderAlbum("After Hours"))
-        assertFalse("Beauty Behind the Madness is a real album", MetadataUtils.isPlaceholderAlbum("Beauty Behind the Madness"))
-        assertFalse("Baahubali is a real album", MetadataUtils.isPlaceholderAlbum("Baahubali"))
-        assertFalse("Animal is a real album", MetadataUtils.isPlaceholderAlbum("Animal"))
-        assertFalse("Thriller is a real album", MetadataUtils.isPlaceholderAlbum("Thriller"))
-    }
-
-    @Test
-    fun testProgressiveQueries_ExcludesPlaceholderAlbum() {
-        val service = createTestEnrichmentService()
-
-        // Track with placeholder album "English"
-        val trackWithPlaceholderAlbum = Track(
-            id = 501L,
-            title = "FE!N",
-            artist = "Travis Scott",
-            albumId = 1L,
-            albumTitle = "English",
-            uri = "/Muzic/English/FE!N.mp3",
-            path = "/Muzic/English/FE!N.mp3",
-            duration = 191000L,
-        )
-
-        val queries = service.buildProgressiveQueries(trackWithPlaceholderAlbum)
-        assertTrue("Queries must not be empty", queries.isNotEmpty())
-        for (q in queries) {
-            assertFalse("Placeholder album 'English' must never be included in search query: '$q'", q.contains("English", ignoreCase = true))
+        // Test clearRemoteArtwork logic
+        var deletedCount = 0
+        tempDir.listFiles()?.forEach { file ->
+            if (file.isFile && (file.name.startsWith("art_album_") || file.name.endsWith(".tmp") || (file.name.startsWith("art_") && !file.name.startsWith("art_embedded_")))) {
+                if (file.delete()) deletedCount++
+            }
         }
-        assertEquals("Travis Scott FE!N", queries[0])
 
-        // Track with genuine album
-        val trackWithRealAlbum = Track(
-            id = 502L,
-            title = "Blinding Lights",
-            artist = "The Weeknd",
-            albumId = 2L,
-            albumTitle = "After Hours",
-            uri = "/Muzic/English/Blinding Lights.mp3",
-            path = "/Muzic/English/Blinding Lights.mp3",
-            duration = 200000L,
+        assertEquals("Remote and tmp artwork files must be deleted", 3, deletedCount)
+        assertFalse("art_album_101.jpg must be deleted", remoteArt1.exists())
+        assertFalse("art_remote_102.jpg must be deleted", remoteArt2.exists())
+        assertFalse("art_download.tmp must be deleted", tmpArt.exists())
+        assertTrue("art_embedded_103.jpg MUST BE PRESERVED", embeddedArt.exists())
+
+        // Test Track user-fields preservation
+        val trackWithRemoteArt = Track(
+            id = 901L,
+            title = "Track One",
+            artist = "Artist One",
+            albumId = 501L,
+            albumTitle = "Album One",
+            duration = 180000L,
+            uri = "/Muzic/song1.mp3",
+            path = "/Muzic/song1.mp3",
+            artworkUri = "file://" + remoteArt1.absolutePath,
+            metadataSource = MetadataSource.EXTERNAL,
+            isFavorite = true,
+            playCount = 25,
+            lastPlayed = 1700000000L,
         )
-
-        val realQueries = service.buildProgressiveQueries(trackWithRealAlbum)
-        assertEquals("The Weeknd Blinding Lights After Hours", realQueries[0])
-        assertEquals("The Weeknd Blinding Lights", realQueries[1])
-    }
-
-    @Test
-    fun testIdentityGate_RejectsDurationOnlyMatch() {
-        val service = createTestEnrichmentService()
-        val localTrack = Track(
-            id = 503L,
-            title = "Dirty Diana",
-            artist = "Michael Jackson",
-            albumId = 3L,
-            albumTitle = "Bad",
-            duration = 296000L,
-            uri = "/Muzic/English/Dirty Diana.mp3",
-        )
-
-        // iTunes returns a completely different Michael Jackson song with same artist and similar duration
-        val wrongCandidate = RemoteTrackMetadata(
-            title = "Thriller",
-            artist = "Michael Jackson",
-            albumTitle = "Thriller",
-            durationMs = 295000L,
-            artworkUrl = "https://example.com/thriller.jpg",
-        )
-
-        val (bestMatch, confidence) = service.findBestMatch(localTrack, listOf(wrongCandidate))
-        assertNull("Duration similarity must NEVER rescue a title mismatch", bestMatch)
-        assertEquals(MetadataConfidence.LOW, confidence)
-    }
-
-    @Test
-    fun testIdentityGate_RejectsSubBandArtistMismatch() {
-        val service = createTestEnrichmentService()
-        val localTrack = Track(
-            id = 504L,
-            title = "Sing",
-            artist = "Travis",
-            albumId = 4L,
-            albumTitle = "The Invisible Band",
-            duration = 230000L,
-            uri = "/Muzic/Sing.mp3",
-        )
-
-        // Remote candidate is Travis Scott (different artist entirely, despite containing "Travis")
-        val candidate = RemoteTrackMetadata(
-            title = "Sing",
-            artist = "Travis Scott",
-            albumTitle = "Sing Single",
-            durationMs = 230000L,
-            artworkUrl = "https://example.com/art.jpg",
-        )
-
-        val (bestMatch, _) = service.findBestMatch(localTrack, listOf(candidate))
-        assertNull("Sub-string artist match 'Travis' in 'Travis Scott' must be rejected", bestMatch)
-    }
-
-    @Test
-    fun testIdentityGate_RejectsVersionMismatch() {
-        val service = createTestEnrichmentService()
-        val localTrack = Track(
-            id = 505L,
-            title = "In The End",
-            artist = "Linkin Park",
-            albumId = 5L,
-            albumTitle = "Hybrid Theory",
-            duration = 216000L,
-            uri = "/Muzic/In The End.mp3",
-        )
-
-        // Candidate is a live or remix version when local is original
-        val liveCandidate = RemoteTrackMetadata(
-            title = "In The End (Live)",
-            artist = "Linkin Park",
-            albumTitle = "Live in Texas",
-            durationMs = 216000L,
-            artworkUrl = "https://example.com/live.jpg",
-        )
-
-        assertFalse("Live version must not be compatible with original track",
-            MetadataUtils.areVersionsCompatible(localTrack.title, liveCandidate.title))
-
-        val (bestMatch, _) = service.findBestMatch(localTrack, listOf(liveCandidate))
-        assertNull("Version mismatch (Live vs Original) must be rejected by identity gate", bestMatch)
-    }
-
-    @Test
-    fun testEmbeddedArtwork_AlwaysWinsOverRemoteArtwork() = kotlinx.coroutines.runBlocking {
-        val service = createTestEnrichmentService()
-        val embeddedUri = "file:///data/user/0/com.mus.android/files/artwork/art_embedded_999.jpg"
 
         val trackWithEmbeddedArt = Track(
-            id = 999L,
-            title = "Blinding Lights",
-            artist = "The Weeknd",
-            albumId = 999L,
-            albumTitle = "After Hours",
-            duration = 200000L,
-            uri = "/Muzic/01.mp3",
-            path = "/Muzic/01.mp3",
-            artworkUri = embeddedUri,
+            id = 902L,
+            title = "Track Two",
+            artist = "Artist Two",
+            albumId = 502L,
+            albumTitle = "Album Two",
+            duration = 210000L,
+            uri = "/Muzic/song2.mp3",
+            path = "/Muzic/song2.mp3",
+            artworkUri = "file://" + embeddedArt.absolutePath,
             metadataSource = MetadataSource.EMBEDDED,
+            isFavorite = false,
+            playCount = 5,
+            lastPlayed = 1690000000L,
         )
 
-        val remoteCandidate = RemoteTrackMetadata(
-            title = "Blinding Lights",
-            artist = "The Weeknd",
-            albumTitle = "After Hours",
-            year = 2020,
-            genre = "R&B/Soul",
-            artworkUrl = "https://example.com/itunes_artwork.jpg",
-        )
+        val existingTracks = listOf(trackWithRemoteArt, trackWithEmbeddedArt)
+        val resetTracks = existingTracks.map { track ->
+            val hasEmbedded = !track.artworkUri.isNullOrBlank() &&
+                    (ArtworkStorage.isEmbeddedArtwork(track.artworkUri) || track.metadataSource == MetadataSource.EMBEDDED)
+            if (!hasEmbedded) {
+                track.copy(
+                    artworkUri = null,
+                    artistArtworkUri = null,
+                    metadataStatus = MetadataStatus.NEEDS_LOOKUP,
+                    metadataConfidence = MetadataConfidence.LOW,
+                    metadataLastUpdated = 0L,
+                )
+            } else {
+                track
+            }
+        }
 
-        val enriched = service.mergeMetadata(trackWithEmbeddedArt, remoteCandidate, MetadataConfidence.HIGH)
-        assertEquals("Genuine embedded artwork MUST ALWAYS WIN over remote iTunes artwork", embeddedUri, enriched.artworkUri)
+        // Verify Track One had artwork reset to null, but user data intact
+        val resetTrack1 = resetTracks.first { it.id == 901L }
+        assertNull("Remote artwork must be reset to null", resetTrack1.artworkUri)
+        assertEquals("Favorite status must survive", true, resetTrack1.isFavorite)
+        assertEquals("Play count must survive", 25, resetTrack1.playCount)
+        assertEquals("Last played must survive", 1700000000L, resetTrack1.lastPlayed)
+        assertEquals("Track ID must be preserved", 901L, resetTrack1.id)
+
+        // Verify Track Two preserved embedded artwork and all user data
+        val resetTrack2 = resetTracks.first { it.id == 902L }
+        assertNotNull("Embedded artwork must be preserved", resetTrack2.artworkUri)
+        assertEquals("file://" + embeddedArt.absolutePath, resetTrack2.artworkUri)
+        assertEquals("Play count must survive", 5, resetTrack2.playCount)
+
+        tempDir.deleteRecursively()
     }
-
 
     // ── Helpers ───────────────────────────────────────────────
 

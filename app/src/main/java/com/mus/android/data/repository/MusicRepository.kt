@@ -2,6 +2,7 @@ package com.mus.android.data.repository
 
 import androidx.room.withTransaction
 import com.mus.android.data.db.*
+import com.mus.android.data.enrichment.artwork.ArtworkStorage
 import com.mus.android.data.model.*
 import com.mus.android.data.scanner.MediaStoreScanner
 import com.mus.android.data.scanner.WaveformExtractor
@@ -172,6 +173,7 @@ class MusicRepository @Inject constructor(
 
     // ── Scanning ──────────────────────────────────────────────
     suspend fun scanDevice(safTreeUri: android.net.Uri? = null): MediaStoreScanner.ScanResult = withContext(Dispatchers.IO) {
+        ensureArtworkRollbackRebuildCompleted()
         ensureMetadataRepairV3Completed()
         ensureMetadataResetV2Completed()
         val targetUri = safTreeUri ?: userPreferences.customMuzicUri.value?.let { android.net.Uri.parse(it) }
@@ -725,6 +727,90 @@ class MusicRepository @Inject constructor(
     }
 
     /**
+     * One-time clean artwork rebuild mechanism following rollback of retrieval pipeline:
+     * 1. Cancels in-flight enrichment
+     * 2. Clears remote/generated iTunes album artwork files and temporary cache
+     * 3. Clears dynamic palette color cache
+     * 4. Resets artwork URIs on tracks without genuine embedded artwork to null
+     * 5. Strictly preserves music files, favorites, play counts, playlists, and stable IDs
+     * 6. Triggers background enrichment using the restored retrieval implementation
+     */
+    suspend fun rebuildArtworkCleanly(): MetadataResetResult = withContext(Dispatchers.IO) {
+        android.util.Log.i("DIAG_ARTWORK_RESET", "=== CLEAN ARTWORK REBUILD STARTED ===")
+        enrichmentService.cancelAllEnrichment()
+
+        val deletedArt = artworkStorage.clearRemoteArtwork()
+        artworkStorage.clearImageCache()
+
+        try {
+            database.paletteDao().deleteAll()
+        } catch (e: Exception) {
+            android.util.Log.w("MusicRepository", "Error clearing palettes: ${e.message}")
+        }
+
+        val existingTracks = trackDao.getAllTracksOnce()
+        val tracksToReset = existingTracks.map { track ->
+            val hasEmbedded = !track.artworkUri.isNullOrBlank() &&
+                    (ArtworkStorage.isEmbeddedArtwork(track.artworkUri) || track.metadataSource == MetadataSource.EMBEDDED)
+            if (!hasEmbedded) {
+                track.copy(
+                    artworkUri = null,
+                    artistArtworkUri = null,
+                    metadataStatus = MetadataStatus.NEEDS_LOOKUP,
+                    metadataConfidence = MetadataConfidence.LOW,
+                    metadataLastUpdated = 0L,
+                )
+            } else {
+                track
+            }
+        }
+        if (tracksToReset.isNotEmpty()) {
+            trackDao.insertAll(tracksToReset)
+        }
+
+        val existingAlbums = albumDao.getAllAlbumsOnce()
+        val resetAlbums = existingAlbums.map { album ->
+            val hasEmbedded = !album.artworkUri.isNullOrBlank() && ArtworkStorage.isEmbeddedArtwork(album.artworkUri)
+            if (!hasEmbedded) {
+                album.copy(artworkUri = null)
+            } else {
+                album
+            }
+        }
+        if (resetAlbums.isNotEmpty()) {
+            albumDao.insertAll(resetAlbums)
+        }
+
+        userPreferences.setArtworkRollbackCompleted(true)
+
+        val tracksNeedingArt = trackDao.getAllTracksOnce().filter { enrichmentService.needsEnrichment(it) }
+        enrichmentService.enqueueEnrichment(tracksNeedingArt)
+
+        android.util.Log.i("DIAG_ARTWORK_RESET", "=== CLEAN ARTWORK REBUILD COMPLETED ===")
+        MetadataResetResult(
+            tracksFound = existingTracks.size,
+            tracksReset = tracksToReset.count { it.artworkUri == null },
+            albumIdsCleared = 0,
+            artworkFilesDeleted = deletedArt,
+            resetStarted = true,
+            resetCompleted = true
+        )
+    }
+
+    /**
+     * Ensures the one-time artwork rollback clean rebuild is executed once across app versions.
+     */
+    suspend fun ensureArtworkRollbackRebuildCompleted(): Boolean = withContext(Dispatchers.IO) {
+        if (!userPreferences.isArtworkRollbackCompleted()) {
+            userPreferences.setArtworkRollbackCompleted(true)
+            rebuildArtworkCleanly()
+            true
+        } else {
+            false
+        }
+    }
+
+    /**
      * Ensures the one-time V3 clean metadata and artwork repair is executed once and only once.
      */
     suspend fun ensureMetadataRepairV3Completed(): Boolean = withContext(Dispatchers.IO) {
@@ -758,6 +844,7 @@ class MusicRepository @Inject constructor(
         val result = performMetadataReset()
         userPreferences.setMetadataResetV2Completed(true)
         userPreferences.setMetadataRepairV3Completed(true)
+        userPreferences.setArtworkRollbackCompleted(true)
         scanDevice()
         result
     }

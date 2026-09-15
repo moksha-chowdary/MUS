@@ -31,9 +31,9 @@ class ITunesMetadataProvider @Inject constructor() : MetadataProvider {
         val trimmedQuery = query.trim()
         if (trimmedQuery.isBlank()) return@withContext emptyList()
 
-        // Keep country=IN as primary storefront since MUS is primarily used with Indian regional music,
-        // falling back to US storefront if IN returns no results
-        var country = "IN"
+        // Detect if query likely targets Indian music for storefront selection
+        val useIndiaStorefront = isLikelyIndianMusic(trimmedQuery)
+        val country = if (useIndiaStorefront) "IN" else "US"
 
         var connection: HttpURLConnection? = null
         var attempts = 0
@@ -60,7 +60,7 @@ class ITunesMetadataProvider @Inject constructor() : MetadataProvider {
                     Log.w(TAG, "iTunes API error: HTTP ${connection.responseCode}")
 
                     // If India storefront returned empty/error, fallback to US
-                    if (country == "IN" && attempts < 2) {
+                    if (useIndiaStorefront && attempts < 2) {
                         connection.disconnect()
                         connection = null
                         Log.d(TAG, "Retrying with US storefront for '$trimmedQuery'")
@@ -85,7 +85,7 @@ class ITunesMetadataProvider @Inject constructor() : MetadataProvider {
                 val results = parseResults(responseText)
 
                 // If India storefront returned no results, try US storefront
-                if (results.isEmpty() && country == "IN" && attempts < 2) {
+                if (results.isEmpty() && useIndiaStorefront && attempts < 2) {
                     connection.disconnect()
                     connection = null
                     Log.d(TAG, "India storefront returned no results, retrying with US for '$trimmedQuery'")

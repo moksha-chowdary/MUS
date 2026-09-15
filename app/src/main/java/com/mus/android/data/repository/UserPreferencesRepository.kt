@@ -65,4 +65,16 @@ open class UserPreferencesRepository @Inject constructor(
         prefs.edit().putBoolean("metadata_repair_v3_completed", completed).apply()
         _metadataRepairV3Completed.value = completed
     }
+
+    private val _artworkRollbackCompleted by lazy { MutableStateFlow(prefs.getBoolean("artwork_rollback_completed", false)) }
+    open val artworkRollbackCompleted: StateFlow<Boolean> get() = _artworkRollbackCompleted.asStateFlow()
+
+    open fun isArtworkRollbackCompleted(): Boolean {
+        return prefs.getBoolean("artwork_rollback_completed", false)
+    }
+
+    open fun setArtworkRollbackCompleted(completed: Boolean) {
+        prefs.edit().putBoolean("artwork_rollback_completed", completed).apply()
+        _artworkRollbackCompleted.value = completed
+    }
 }
