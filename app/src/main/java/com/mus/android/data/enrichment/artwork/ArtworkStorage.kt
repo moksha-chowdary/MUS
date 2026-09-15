@@ -139,9 +139,28 @@ class ArtworkStorage @Inject constructor(
             return@withContext fileToUriString(targetFile)
         }
 
+        val primaryResult = downloadSingleArtworkUrl(imageUrl, targetFile, artworkKey)
+        if (primaryResult != null) return@withContext primaryResult
+
+        // Fallback: if high-res 600x600 failed, retry with original 100x100 URL
+        val fallbackUrl = when {
+            imageUrl.contains("600x600bb.jpg") -> imageUrl.replace("600x600bb.jpg", "100x100bb.jpg")
+            imageUrl.contains("600x600") -> imageUrl.replace("600x600", "100x100")
+            else -> null
+        }
+        if (fallbackUrl != null && fallbackUrl != imageUrl) {
+            Log.d(TAG, "Retrying artwork download with fallback URL: $fallbackUrl")
+            val fallbackResult = downloadSingleArtworkUrl(fallbackUrl, targetFile, artworkKey)
+            if (fallbackResult != null) return@withContext fallbackResult
+        }
+
+        null
+    }
+
+    private fun downloadSingleArtworkUrl(urlStr: String, targetFile: File, artworkKey: String): String? {
         var connection: HttpURLConnection? = null
-        try {
-            val url = URL(imageUrl)
+        return try {
+            val url = URL(urlStr)
             connection = (url.openConnection() as HttpURLConnection).apply {
                 requestMethod = "GET"
                 connectTimeout = 8000
@@ -150,8 +169,8 @@ class ArtworkStorage @Inject constructor(
             }
 
             if (connection.responseCode != HttpURLConnection.HTTP_OK) {
-                Log.w(TAG, "Failed to download artwork: HTTP ${connection.responseCode}")
-                return@withContext null
+                Log.w(TAG, "Failed to download artwork from $urlStr: HTTP ${connection.responseCode}")
+                return null
             }
 
             val tempFile = File(artworkDir, "art_${artworkKey}.tmp")
@@ -165,14 +184,14 @@ class ArtworkStorage @Inject constructor(
                 if (targetFile.exists()) targetFile.delete()
                 if (tempFile.renameTo(targetFile)) {
                     Log.d(TAG, "Successfully cached artwork for key $artworkKey: ${targetFile.absolutePath}")
-                    return@withContext fileToUriString(targetFile)
+                    return fileToUriString(targetFile)
                 } else {
-                    return@withContext fileToUriString(tempFile)
+                    return fileToUriString(tempFile)
                 }
             }
             null
         } catch (e: Exception) {
-            Log.w(TAG, "Error downloading artwork from $imageUrl for key $artworkKey: ${e.message}")
+            Log.w(TAG, "Error downloading artwork from $urlStr for key $artworkKey: ${e.message}")
             null
         } finally {
             connection?.disconnect()

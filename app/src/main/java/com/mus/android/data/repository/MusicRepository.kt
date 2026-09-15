@@ -173,6 +173,7 @@ class MusicRepository @Inject constructor(
 
     // ── Scanning ──────────────────────────────────────────────
     suspend fun scanDevice(safTreeUri: android.net.Uri? = null): MediaStoreScanner.ScanResult = withContext(Dispatchers.IO) {
+        ensureArtworkRestoredV5Completed()
         ensureArtworkForensicFixCompleted()
         ensureArtworkRollbackRebuildCompleted()
         ensureMetadataRepairV3Completed()
@@ -782,6 +783,7 @@ class MusicRepository @Inject constructor(
             albumDao.insertAll(resetAlbums)
         }
 
+        userPreferences.setArtworkRestoredV5Completed(true)
         userPreferences.setArtworkForensicFixV4Completed(true)
         userPreferences.setArtworkRollbackCompleted(true)
 
@@ -797,6 +799,21 @@ class MusicRepository @Inject constructor(
             resetStarted = true,
             resetCompleted = true
         )
+    }
+
+    /**
+     * Ensures the one-time artwork restoration clean rebuild is executed once across app versions.
+     */
+    suspend fun ensureArtworkRestoredV5Completed(): Boolean = withContext(Dispatchers.IO) {
+        if (!userPreferences.isArtworkRestoredV5Completed()) {
+            userPreferences.setArtworkRestoredV5Completed(true)
+            userPreferences.setArtworkForensicFixV4Completed(true)
+            userPreferences.setArtworkRollbackCompleted(true)
+            rebuildArtworkCleanly()
+            true
+        } else {
+            false
+        }
     }
 
     /**

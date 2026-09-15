@@ -89,4 +89,16 @@ open class UserPreferencesRepository @Inject constructor(
         prefs.edit().putBoolean("artwork_forensic_fix_v4_completed", completed).apply()
         _artworkForensicFixV4Completed.value = completed
     }
+
+    private val _artworkRestoredV5Completed by lazy { MutableStateFlow(prefs.getBoolean("artwork_restored_v5_completed", false)) }
+    open val artworkRestoredV5Completed: StateFlow<Boolean> get() = _artworkRestoredV5Completed.asStateFlow()
+
+    open fun isArtworkRestoredV5Completed(): Boolean {
+        return prefs.getBoolean("artwork_restored_v5_completed", false)
+    }
+
+    open fun setArtworkRestoredV5Completed(completed: Boolean) {
+        prefs.edit().putBoolean("artwork_restored_v5_completed", completed).apply()
+        _artworkRestoredV5Completed.value = completed
+    }
 }
