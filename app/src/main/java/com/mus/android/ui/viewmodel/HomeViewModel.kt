@@ -248,21 +248,6 @@ class HomeViewModel @Inject constructor(
         }
     }
 
-    fun resetAndRebuildMetadata() {
-        viewModelScope.launch {
-            _isLoading.value = true
-            _errorMessage.value = null
-            try {
-                repository.resetAndRebuildMetadata()
-            } catch (e: Exception) {
-                _errorMessage.value = e.localizedMessage ?: "Failed resetting metadata"
-                e.printStackTrace()
-            } finally {
-                _isLoading.value = false
-            }
-        }
-    }
-
     fun refreshLibrary() {
         viewModelScope.launch { scanDevice() }
     }

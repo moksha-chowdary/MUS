@@ -103,25 +103,6 @@ class ArtworkStorage @Inject constructor(
     }
 
     /**
-     * Returns the file Uri for the cached embedded artwork for a specific track.
-     */
-    fun getEmbeddedArtworkUri(trackId: Long): String? {
-        val file = File(artworkDir, "art_embedded_$trackId.jpg")
-        return if (file.exists() && file.length() > 0L) {
-            fileToUriString(file)
-        } else {
-            null
-        }
-    }
-
-    /**
-     * Saves raw embedded artwork bytes isolated per track.
-     */
-    fun saveEmbeddedArtworkForTrack(trackId: Long, bytes: ByteArray): String? {
-        return saveEmbeddedArtworkByKey("embedded_$trackId", bytes)
-    }
-
-    /**
      * Saves raw artwork bytes for album ID.
      */
     fun saveEmbeddedArtwork(albumId: Long, bytes: ByteArray): String? {
@@ -139,28 +120,9 @@ class ArtworkStorage @Inject constructor(
             return@withContext fileToUriString(targetFile)
         }
 
-        val primaryResult = downloadSingleArtworkUrl(imageUrl, targetFile, artworkKey)
-        if (primaryResult != null) return@withContext primaryResult
-
-        // Fallback: if high-res 600x600 failed, retry with original 100x100 URL
-        val fallbackUrl = when {
-            imageUrl.contains("600x600bb.jpg") -> imageUrl.replace("600x600bb.jpg", "100x100bb.jpg")
-            imageUrl.contains("600x600") -> imageUrl.replace("600x600", "100x100")
-            else -> null
-        }
-        if (fallbackUrl != null && fallbackUrl != imageUrl) {
-            Log.d(TAG, "Retrying artwork download with fallback URL: $fallbackUrl")
-            val fallbackResult = downloadSingleArtworkUrl(fallbackUrl, targetFile, artworkKey)
-            if (fallbackResult != null) return@withContext fallbackResult
-        }
-
-        null
-    }
-
-    private fun downloadSingleArtworkUrl(urlStr: String, targetFile: File, artworkKey: String): String? {
         var connection: HttpURLConnection? = null
-        return try {
-            val url = URL(urlStr)
+        try {
+            val url = URL(imageUrl)
             connection = (url.openConnection() as HttpURLConnection).apply {
                 requestMethod = "GET"
                 connectTimeout = 8000
@@ -169,8 +131,8 @@ class ArtworkStorage @Inject constructor(
             }
 
             if (connection.responseCode != HttpURLConnection.HTTP_OK) {
-                Log.w(TAG, "Failed to download artwork from $urlStr: HTTP ${connection.responseCode}")
-                return null
+                Log.w(TAG, "Failed to download artwork: HTTP ${connection.responseCode}")
+                return@withContext null
             }
 
             val tempFile = File(artworkDir, "art_${artworkKey}.tmp")
@@ -184,14 +146,14 @@ class ArtworkStorage @Inject constructor(
                 if (targetFile.exists()) targetFile.delete()
                 if (tempFile.renameTo(targetFile)) {
                     Log.d(TAG, "Successfully cached artwork for key $artworkKey: ${targetFile.absolutePath}")
-                    return fileToUriString(targetFile)
+                    return@withContext fileToUriString(targetFile)
                 } else {
-                    return fileToUriString(tempFile)
+                    return@withContext fileToUriString(tempFile)
                 }
             }
             null
         } catch (e: Exception) {
-            Log.w(TAG, "Error downloading artwork from $urlStr for key $artworkKey: ${e.message}")
+            Log.w(TAG, "Error downloading artwork from $imageUrl for key $artworkKey: ${e.message}")
             null
         } finally {
             connection?.disconnect()
@@ -214,78 +176,9 @@ class ArtworkStorage @Inject constructor(
         }
     }
 
-    /**
-     * Deletes only remote/generated iTunes album artwork (art_album_*.jpg, art_*.tmp),
-     * preserving genuine extracted embedded artwork (art_embedded_*.jpg).
-     */
-     fun clearRemoteArtwork(): Int {
-        var count = 0
-        try {
-            val dir = File(context.filesDir, "artwork")
-            if (dir.exists()) {
-                dir.listFiles()?.forEach { file ->
-                    if (file.isFile && (file.name.startsWith("art_album_") || file.name.endsWith(".tmp") || (file.name.startsWith("art_") && !file.name.startsWith("art_embedded_")))) {
-                        if (file.delete()) count++
-                    }
-                }
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "Error clearing remote artwork: ${e.message}")
-        }
-        return count
-    }
-
-    /**
-     * Clears all cached and generated artwork files in app-owned storage.
-     * Deletes only MUS artwork files (e.g. art_*.jpg, art_album_*.jpg, art_*.tmp).
-     * Returns the count of deleted files.
-     */
-    fun clearAllArtwork(): Int {
-        var count = 0
-        try {
-            val dir = File(context.filesDir, "artwork")
-            if (dir.exists()) {
-                dir.listFiles()?.forEach { file ->
-                    if (file.isFile && (file.name.startsWith("art_") || file.name.endsWith(".jpg") || file.name.endsWith(".tmp"))) {
-                        if (file.delete()) {
-                            count++
-                        }
-                    }
-                }
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "Error clearing artwork cache: ${e.message}")
-        }
-        return count
-    }
-
-    /**
-     * Clears Coil image disk cache in context.cacheDir/image_cache.
-     * Returns count of deleted cache entries.
-     */
-    fun clearImageCache(): Int {
-        var count = 0
-        try {
-            val coilCache = context.cacheDir.resolve("image_cache")
-            if (coilCache.exists()) {
-                coilCache.listFiles()?.forEach { file ->
-                    if (file.deleteRecursively()) count++
-                }
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "Error clearing Coil image cache: ${e.message}")
-        }
-        return count
-    }
-
     companion object {
         private const val TAG = "ArtworkStorage"
         val UNKNOWN_ALBUM_ID: Long = com.mus.android.data.scanner.MetadataUtils.generateAlbumId("Unknown Artist", "Unknown Album")
-
-        fun isEmbeddedArtwork(artworkUri: String?): Boolean {
-            if (artworkUri.isNullOrBlank()) return false
-            return artworkUri.contains("art_embedded_")
-        }
 
         private val isAndroidRuntime: Boolean by lazy {
             try {

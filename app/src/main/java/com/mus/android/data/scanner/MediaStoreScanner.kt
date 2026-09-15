@@ -419,8 +419,7 @@ class MediaStoreScanner @Inject constructor(
 
                         val pic = retriever.embeddedPicture
                         if (pic != null) {
-                            val stableTrackId = MetadataUtils.generateStableTrackId(filePath) ?: mediaStoreId
-                            val artKey = MetadataUtils.generateEmbeddedArtworkKey(stableTrackId)
+                            val artKey = MetadataUtils.generateArtworkKey(rawAlbumArtist ?: effectiveRawArtist ?: "", effectiveRawAlbum ?: "", contentUri.toString())
                             val artDir = File(context.filesDir, "artwork")
                             if (!artDir.exists()) artDir.mkdirs()
                             val artFile = File(artDir, "art_$artKey.jpg")
@@ -428,7 +427,7 @@ class MediaStoreScanner @Inject constructor(
                                 try {
                                     FileOutputStream(artFile).use { it.write(pic) }
                                 } catch (e: Exception) {
-                                    Log.w(TAG, "Failed writing cached embedded artwork for key $artKey", e)
+                                    Log.w(TAG, "Failed writing cached artwork for key $artKey", e)
                                 }
                             }
                             if (artFile.exists() && artFile.length() > 0L) {
@@ -536,12 +535,11 @@ class MediaStoreScanner @Inject constructor(
         val discNumber = discNumStr?.substringBefore("/")?.trim()?.toIntOrNull() ?: 1
         val year = yearStr?.let { Regex("""\b(19\d\d|20\d\d)\b""").find(it)?.value?.toIntOrNull() } ?: 0
 
-        // Extract embedded artwork using isolated per-track key
+        // Extract embedded artwork using collision-free key
         var artworkUri: String? = null
         val picture = retriever.embeddedPicture
         if (picture != null) {
-            val stableTrackId = MetadataUtils.generateStableTrackId(pathOrUri) ?: MetadataUtils.generateDeterministicId("track:$pathOrUri")
-            val artKey = MetadataUtils.generateEmbeddedArtworkKey(stableTrackId)
+            val artKey = MetadataUtils.generateArtworkKey(resolved.albumArtist, resolved.album, pathOrUri)
             val artDir = File(context.filesDir, "artwork")
             if (!artDir.exists()) artDir.mkdirs()
             val artFile = File(artDir, "art_$artKey.jpg")
@@ -549,7 +547,7 @@ class MediaStoreScanner @Inject constructor(
                 try {
                     FileOutputStream(artFile).use { it.write(picture) }
                 } catch (e: Exception) {
-                    Log.w(TAG, "Failed writing cached embedded artwork for key $artKey", e)
+                    Log.w(TAG, "Failed writing cached artwork for key $artKey", e)
                 }
             }
             if (artFile.exists() && artFile.length() > 0L) {
@@ -604,42 +602,39 @@ class MediaStoreScanner @Inject constructor(
         for (track in tracks) {
             val albumId = track.albumId
 
-            // Do not create aggregate Album entities for placeholder albums (e.g. language folders, unknown album)
-            if (!MetadataUtils.isPlaceholderAlbum(track.albumTitle)) {
-                // Album is grouped primarily by Album Artist, falling back to Track Artist
-                val effectiveArtist = if (track.albumArtist.isNotBlank() && !MetadataUtils.isPlaceholderArtist(track.albumArtist)) {
-                    track.albumArtist
-                } else if (track.artist.isNotBlank() && !MetadataUtils.isPlaceholderArtist(track.artist)) {
-                    track.artist
-                } else {
-                    "Unknown Artist"
-                }
+            // Album is grouped primarily by Album Artist, falling back to Track Artist
+            val effectiveArtist = if (track.albumArtist.isNotBlank() && !MetadataUtils.isPlaceholderArtist(track.albumArtist)) {
+                track.albumArtist
+            } else if (track.artist.isNotBlank() && !MetadataUtils.isPlaceholderArtist(track.artist)) {
+                track.artist
+            } else {
+                "Unknown Artist"
+            }
 
-                if (albumId !in albumsMap) {
-                    albumsMap[albumId] = Album(
-                        id = albumId,
-                        title = track.albumTitle,
-                        artist = effectiveArtist,
-                        artworkUri = track.artworkUri,
-                        year = track.year,
-                        trackCount = 0,
-                        totalDuration = 0,
-                    )
+            if (albumId !in albumsMap) {
+                albumsMap[albumId] = Album(
+                    id = albumId,
+                    title = track.albumTitle,
+                    artist = effectiveArtist,
+                    artworkUri = track.artworkUri,
+                    year = track.year,
+                    trackCount = 0,
+                    totalDuration = 0,
+                )
+            }
+            albumsMap[albumId] = albumsMap[albumId]!!.let { existing ->
+                val bestArt = when {
+                    com.mus.android.data.enrichment.artwork.ArtworkStorage.isArtworkValid(existing.artworkUri) -> existing.artworkUri
+                    com.mus.android.data.enrichment.artwork.ArtworkStorage.isArtworkValid(track.artworkUri) -> track.artworkUri
+                    else -> existing.artworkUri ?: track.artworkUri
                 }
-                albumsMap[albumId] = albumsMap[albumId]!!.let { existing ->
-                    val bestArt = when {
-                        com.mus.android.data.enrichment.artwork.ArtworkStorage.isArtworkValid(existing.artworkUri) -> existing.artworkUri
-                        com.mus.android.data.enrichment.artwork.ArtworkStorage.isArtworkValid(track.artworkUri) -> track.artworkUri
-                        else -> existing.artworkUri ?: track.artworkUri
-                    }
-                    existing.copy(
-                        artist = if (existing.artist.isNotBlank() && !MetadataUtils.isPlaceholderArtist(existing.artist)) existing.artist else effectiveArtist,
-                        trackCount = existing.trackCount + 1,
-                        totalDuration = existing.totalDuration + track.duration,
-                        artworkUri = bestArt,
-                        year = if (existing.year == 0 && track.year > 0) track.year else existing.year
-                    )
-                }
+                existing.copy(
+                    artist = if (existing.artist.isNotBlank() && !MetadataUtils.isPlaceholderArtist(existing.artist)) existing.artist else effectiveArtist,
+                    trackCount = existing.trackCount + 1,
+                    totalDuration = existing.totalDuration + track.duration,
+                    artworkUri = bestArt,
+                    year = if (existing.year == 0 && track.year > 0) track.year else existing.year
+                )
             }
 
             // Artist aggregation: record primary album artist

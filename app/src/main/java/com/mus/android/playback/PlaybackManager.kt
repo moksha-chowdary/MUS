@@ -67,10 +67,6 @@ class PlaybackManager @Inject constructor(
     private var cumulativePlayTimeMs: Long = 0L
     private var lastTickTimeMs: Long = 0L
 
-    // Transition diagnostics
-    private var lastTransitionIndex: Int = -1
-    private var lastTransitionMediaId: String? = null
-
     init {
         scope.launch {
             try {
@@ -198,9 +194,6 @@ class PlaybackManager @Inject constructor(
         }
         val index = queue.indexOf(track).coerceAtLeast(0)
         _currentIndex.value = index
-        lastTransitionIndex = index
-        lastTransitionMediaId = track.id.toString()
-        android.util.Log.i(TAG, "QUEUE_TRANSITION reason=PLAY_TRACK trackId=${track.id} title='${track.title}' toIndex=$index queueSize=${queue.size}")
         val mediaItems = queue.map { it.toMediaItem() }
         controller.setMediaItems(mediaItems, index, 0)
         controller.prepare()
@@ -208,14 +201,10 @@ class PlaybackManager @Inject constructor(
     }
 
     fun playTrackAtIndex(index: Int) {
-        val controller = mediaController ?: return
-        if (index == controller.currentMediaItemIndex && controller.isPlaying) {
-            android.util.Log.d(TAG, "QUEUE_TRANSITION playTrackAtIndex: already playing at index $index, ignoring redundant seek")
-            return
+        mediaController?.apply {
+            seekTo(index, 0)
+            play()
         }
-        android.util.Log.i(TAG, "QUEUE_TRANSITION reason=PLAY_TRACK_AT_INDEX fromIndex=${controller.currentMediaItemIndex} toIndex=$index queueSize=${controller.mediaItemCount}")
-        controller.seekTo(index, 0)
-        controller.play()
     }
 
     fun play() { mediaController?.play() }
@@ -227,14 +216,8 @@ class PlaybackManager @Inject constructor(
         }
     }
 
-    fun skipNext() {
-        android.util.Log.i(TAG, "QUEUE_TRANSITION reason=SKIP_NEXT fromIndex=${mediaController?.currentMediaItemIndex} queueSize=${mediaController?.mediaItemCount}")
-        mediaController?.seekToNextMediaItem()
-    }
-    fun skipPrevious() {
-        android.util.Log.i(TAG, "QUEUE_TRANSITION reason=SKIP_PREVIOUS fromIndex=${mediaController?.currentMediaItemIndex} queueSize=${mediaController?.mediaItemCount}")
-        mediaController?.seekToPreviousMediaItem()
-    }
+    fun skipNext() { mediaController?.seekToNextMediaItem() }
+    fun skipPrevious() { mediaController?.seekToPreviousMediaItem() }
 
     fun seekTo(positionMs: Long) { mediaController?.seekTo(positionMs) }
 
@@ -341,34 +324,14 @@ class PlaybackManager @Inject constructor(
 
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
             val controller = mediaController ?: return
-            val toIndex = controller.currentMediaItemIndex
-            val fromIndex = lastTransitionIndex
-            val toMediaId = mediaItem?.mediaId
-            val fromMediaId = lastTransitionMediaId
-            val reasonStr = when (reason) {
-                Player.MEDIA_ITEM_TRANSITION_REASON_AUTO -> "MEDIA3_AUTO"
-                Player.MEDIA_ITEM_TRANSITION_REASON_SEEK -> "SEEK"
-                Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT -> "REPEAT"
-                Player.MEDIA_ITEM_TRANSITION_REASON_PLAYLIST_CHANGED -> "PLAYLIST_CHANGED"
-                else -> "UNKNOWN($reason)"
-            }
-
-            if (fromIndex != -1 && toIndex < fromIndex && reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO) {
-                android.util.Log.w(TAG, "QUEUE_TRANSITION WARNING: Unexpected backward transition! reason=$reasonStr fromIndex=$fromIndex toIndex=$toIndex fromMediaId=$fromMediaId toMediaId=$toMediaId queueSize=${controller.mediaItemCount}")
-            } else {
-                android.util.Log.i(TAG, "QUEUE_TRANSITION reason=$reasonStr fromIndex=$fromIndex toIndex=$toIndex fromMediaId=$fromMediaId toMediaId=$toMediaId queueSize=${controller.mediaItemCount}")
-            }
-
-            lastTransitionIndex = toIndex
-            lastTransitionMediaId = toMediaId
-
-            _currentIndex.value = toIndex
-            val mediaIdNum = toMediaId?.toLongOrNull()
-            val found = if (mediaIdNum != null) trackList.find { it.id == mediaIdNum } else null
+            val index = controller.currentMediaItemIndex
+            _currentIndex.value = index
+            val mediaId = mediaItem?.mediaId?.toLongOrNull()
+            val found = if (mediaId != null) trackList.find { it.id == mediaId } else null
             if (found != null) {
                 _currentTrack.value = found
-            } else if (toIndex in trackList.indices) {
-                _currentTrack.value = trackList[toIndex]
+            } else if (index in trackList.indices) {
+                _currentTrack.value = trackList[index]
             }
         }
 
@@ -448,9 +411,5 @@ class PlaybackManager @Inject constructor(
         mediaController?.removeListener(playerListener)
         mediaController?.release()
         mediaController = null
-    }
-
-    companion object {
-        private const val TAG = "PlaybackManager"
     }
 }

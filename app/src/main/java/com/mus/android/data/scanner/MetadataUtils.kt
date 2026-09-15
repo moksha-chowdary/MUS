@@ -44,57 +44,30 @@ object MetadataUtils {
         return input.trim().lowercase()
     }
 
-    private val PLACEHOLDER_ALBUMS = setOf(
-        "unknown album", "<unknown>", "unknown", "muzic", "music", "audio", "songs",
-        "downloads", "download", "soundtrack", "soundtracks", "ost", "single", "singles",
-        "various", "various artists",
-        // Top-level /Muzic/ language and genre folder names must never be treated as album titles
-        "english", "telugu", "hindi", "tamil", "kannada", "malayalam", "punjabi",
-        "bhojpuri", "bengali", "marathi", "gujarati", "urdu", "odia", "assamese",
-        "pop", "rock", "classical", "hip-hop", "hip hop", "rap", "bollywood", "tollywood", "kollywood"
-    )
-
-    private val PLACEHOLDER_ARTISTS = setOf(
-        "unknown artist", "<unknown>", "unknown", "various artists", "various", "artist",
-        "track artist", "album artist", "composer", "singer", "unknown composer"
-    )
-
-    private val PLACEHOLDER_TITLES = setOf(
-        "unknown track", "<unknown>", "unknown", "track 01", "track 02", "track 03",
-        "track 04", "track 05", "track 06", "track 07", "track 08", "track 09", "track 10",
-        "track", "audio", "music", "song", "untitled", "audiotrack", "audio track"
-    )
-
     fun isPlaceholderArtist(artist: String?): Boolean {
         if (artist.isNullOrBlank()) return true
-        val norm = normalizeString(artist)
-        return norm in PLACEHOLDER_ARTISTS || norm.startsWith("unknown")
+        val trimmed = artist.trim()
+        return trimmed.equals("Unknown Artist", ignoreCase = true) ||
+                trimmed.equals("<unknown>", ignoreCase = true) ||
+                trimmed.equals("Unknown", ignoreCase = true)
     }
 
     fun isPlaceholderAlbum(album: String?): Boolean {
         if (album.isNullOrBlank()) return true
-        val norm = normalizeString(album)
-        return norm in PLACEHOLDER_ALBUMS ||
-                norm.startsWith("unknown") ||
-                norm == "track" ||
-                norm.matches(Regex("""album\s*\d*"""))
+        val trimmed = album.trim()
+        return trimmed.equals("Unknown Album", ignoreCase = true) ||
+                trimmed.equals("<unknown>", ignoreCase = true) ||
+                trimmed.equals("Unknown", ignoreCase = true) ||
+                trimmed.equals("Muzic", ignoreCase = true) ||
+                trimmed.equals("Music", ignoreCase = true)
     }
 
     fun isPlaceholderTitle(title: String?): Boolean {
         if (title.isNullOrBlank()) return true
-        val norm = normalizeString(title)
-        return norm in PLACEHOLDER_TITLES ||
-                norm.startsWith("unknown") ||
-                norm.matches(Regex("""track\s*\d+""")) ||
-                norm.matches(Regex("""audio\s*\d+"""))
-    }
-
-    /**
-     * Dedicated, isolated artwork key for embedded artwork.
-     * Prevents remote iTunes downloads from overwriting embedded file artwork on disk.
-     */
-    fun generateEmbeddedArtworkKey(trackId: Long): String {
-        return "embedded_$trackId"
+        val trimmed = title.trim()
+        return trimmed.equals("Unknown Track", ignoreCase = true) ||
+                trimmed.equals("<unknown>", ignoreCase = true) ||
+                trimmed.equals("Unknown", ignoreCase = true)
     }
 
     /**
@@ -110,167 +83,6 @@ object MetadataUtils {
             val normalized = normalizeString(pathOrUri)
             "file_${generateDeterministicId("file:$normalized")}"
         }
-    }
-
-    // ── Robust Comparison Normalization & Identity Gates ─────
-
-    val CRITICAL_VERSION_DESCRIPTORS = setOf(
-        "remix", "live", "acoustic", "instrumental", "cover", "re-recording",
-        "rerecording", "re-recorded", "demo", "choir", "slowed", "reverb",
-        "orchestral", "unplugged", "club mix", "radio edit"
-    )
-
-    private val ALL_VERSION_DESCRIPTORS = CRITICAL_VERSION_DESCRIPTORS + setOf(
-        "remaster", "remastered", "extended", "extended mix", "deluxe", "bonus"
-    )
-
-    /**
-     * Normalizes text strictly for comparison (never alters user display metadata).
-     * Decomposes Unicode, strips accents, removes punctuation, collapses whitespace,
-     * and normalizes featuring and noise annotations.
-     */
-    fun normalizeForComparison(input: String?): String {
-        if (input.isNullOrBlank()) return ""
-        val decomposed = java.text.Normalizer.normalize(input, java.text.Normalizer.Form.NFD)
-        val stripped = decomposed.replace(Regex("""\p{M}"""), "")
-        var text = stripped.lowercase()
-        // Standardize quotes and apostrophes
-        text = text.replace(Regex("""[’‘`´"“”]"""), "'")
-        // Standardize dashes
-        text = text.replace(Regex("""[\u2013\u2014\u2015\u2212]"""), "-")
-        // Strip featuring notation
-        text = text.replace(Regex("""(?i)\s*[\(\[\{]\s*(?:feat\.?|ft\.?)\s+[^)\]\}]+[)\]\}]"""), " ")
-        text = text.replace(Regex("""(?i)\s+feat\.?\s+.*$"""), " ")
-        text = text.replace(Regex("""(?i)\s+ft\.?\s+.*$"""), " ")
-        // Strip video/audio trailer noise
-        text = text.replace(Regex("""(?i)\s*[\(\[\{]\s*(?:official\s*(?:music\s*)?video|official\s*audio|video|lyric\s*video|lyrics?|visualizer|audio|hd|4k)\s*[)\]\}]"""), " ")
-        // Replace non-alphanumeric punctuation with spaces
-        text = text.replace(Regex("""[^\p{L}\p{N}\s]"""), " ")
-        return text.replace(Regex("""\s+"""), " ").trim()
-    }
-
-    /**
-     * Extracts version descriptors (remix, live, acoustic, etc.) present in a title.
-     */
-    fun extractVersionDescriptors(title: String): Set<String> {
-        val norm = normalizeForComparison(title)
-        val found = mutableSetOf<String>()
-        for (vd in ALL_VERSION_DESCRIPTORS) {
-            if (Regex("""\b${Regex.escape(vd)}\b""").containsMatchIn(norm)) {
-                val canonical = when (vd) {
-                    "remastered" -> "remaster"
-                    "rerecording", "re-recorded" -> "re-recording"
-                    else -> vd
-                }
-                found.add(canonical)
-            }
-        }
-        return found
-    }
-
-    /**
-     * Validates that the remote candidate does not conflict with the local track version.
-     * E.g. prevents matching an original song to a Remix, Live, Acoustic, or Instrumental.
-     */
-    fun areVersionsCompatible(localTitle: String, candidateTitle: String): Boolean {
-        val localVersions = extractVersionDescriptors(localTitle)
-        val candidateVersions = extractVersionDescriptors(candidateTitle)
-
-        for (cd in CRITICAL_VERSION_DESCRIPTORS) {
-            val canonical = when (cd) {
-                "rerecording", "re-recorded" -> "re-recording"
-                else -> cd
-            }
-            if (canonical in candidateVersions && canonical !in localVersions) {
-                return false
-            }
-            if (canonical in localVersions && canonical !in candidateVersions) {
-                return false
-            }
-        }
-        return true
-    }
-
-    /**
-     * Strict title matcher for the Identity Gate.
-     * Returns true only when strong identity evidence is established.
-     */
-    fun isTitleMatch(localTitle: String, candidateTitle: String): Boolean {
-        val normLocal = normalizeForComparison(localTitle)
-        val normCand = normalizeForComparison(candidateTitle)
-        if (normLocal.isBlank() || normCand.isBlank()) return false
-        if (normLocal == normCand) return true
-
-        // Strip "from <movie>" or "from <soundtrack>" suffixes common in Indian music
-        val localBase = normLocal.replace(Regex("""\bfrom\s+.*$"""), "").trim()
-        val candBase = normCand.replace(Regex("""\bfrom\s+.*$"""), "").trim()
-        if (localBase.isNotBlank() && candBase.isNotBlank() && localBase == candBase) return true
-
-        // Match on word boundaries (exact substring of whole words)
-        val localStr = " $normLocal "
-        val candStr = " $normCand "
-        val localWords = normLocal.split(" ").filter { it.isNotBlank() }
-        val candWords = normCand.split(" ").filter { it.isNotBlank() }
-
-        if (localWords.size >= 2 && candStr.contains(localStr)) return true
-        if (candWords.size >= 2 && localStr.contains(candStr)) return true
-
-        // If local is a single distinct word (e.g. "FE!N"), require whole-word boundary
-        if (localWords.size == 1 && localWords[0].length >= 3 && candStr.contains(localStr)) {
-            return true
-        }
-
-        return false
-    }
-
-    /**
-     * Splits an artist string into constituent artist names (handling multiple singers/composers).
-     */
-    fun splitArtistTokens(artist: String): List<String> {
-        return artist.split(Regex("""(?i)\s*(?:,|&|\band\b|\bfeat\.?\b|\bft\.?\b|\bwith\b|\bx\b|/|;)\s*"""))
-            .map { it.trim() }
-            .filter { it.isNotBlank() }
-    }
-
-    /**
-     * Strict artist matcher for the Identity Gate.
-     * Handles soundtrack composers, multiple singers, and collection artists.
-     */
-    fun isArtistMatch(
-        localArtist: String,
-        candidateArtist: String,
-        candidateAlbumArtist: String? = null,
-        localComposer: String? = null,
-    ): Boolean {
-        val normLocal = normalizeForComparison(localArtist)
-        val normCand = normalizeForComparison(candidateArtist)
-        val normCandAlbumArtist = candidateAlbumArtist?.let { normalizeForComparison(it) } ?: ""
-        val normComposer = localComposer?.let { normalizeForComparison(it) } ?: ""
-
-        if (normLocal.isBlank()) return false
-        if (normLocal == normCand) return true
-        if (normCandAlbumArtist.isNotBlank() && normLocal == normCandAlbumArtist) return true
-        if (normComposer.isNotBlank() && (normComposer == normCand || normComposer == normCandAlbumArtist)) return true
-
-        val localTokens = splitArtistTokens(localArtist)
-        val candTokens = splitArtistTokens(candidateArtist) +
-                (if (candidateAlbumArtist != null) splitArtistTokens(candidateAlbumArtist) else emptyList()) +
-                (if (localComposer != null) splitArtistTokens(localComposer) else emptyList())
-
-        // Compare individual artist tokens strictly (preventing single-word band collisions)
-        for (lt in localTokens) {
-            val normLt = normalizeForComparison(lt)
-            if (normLt.length < 3) continue
-            for (ct in candTokens) {
-                val normCt = normalizeForComparison(ct)
-                if (normCt.length < 3) continue
-                if (normLt == normCt) {
-                    return true
-                }
-            }
-        }
-
-        return false
     }
 
     /**
@@ -345,32 +157,6 @@ object MetadataUtils {
         if (filePath.isNullOrBlank()) return null
         val relative = extractMuzicRelativePath(filePath) ?: return null
         return generateDeterministicId("track_path:$relative")
-    }
-
-    /**
-     * Returns a normalized, lowercased Muzic-relative path for reconciliation lookups.
-     * Used for case-insensitive matching when migrating from old unstable IDs.
-     */
-    fun normalizeForLookup(pathOrUri: String?): String? {
-        if (pathOrUri.isNullOrBlank()) return null
-        val relative = extractMuzicRelativePath(pathOrUri) ?: return null
-        return relative.lowercase().replace('\\', '/').trim()
-    }
-
-    /**
-     * Extracts the album-level folder path from a track's path.
-     * For /Muzic/English/AlbumName/song.mp3 → "English/AlbumName"
-     * For /Muzic/English/song.mp3 → "English"
-     * For /Muzic/song.mp3 → null (root, no album folder)
-     * Used for album grouping when embedded metadata is insufficient.
-     */
-    fun extractAlbumFolderPath(pathOrUri: String?): String? {
-        if (pathOrUri.isNullOrBlank()) return null
-        val relative = extractMuzicRelativePath(pathOrUri) ?: return null
-        val clean = relative.trim().removePrefix("/")
-        val lastSlash = clean.lastIndexOf('/')
-        if (lastSlash <= 0) return null // File at root or no directory structure
-        return clean.substring(0, lastSlash)
     }
 
     data class FilenameHints(

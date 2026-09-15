@@ -4,7 +4,6 @@ import androidx.compose.animation.*
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.DragInteraction
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.pager.HorizontalPager
@@ -65,46 +64,23 @@ fun NowPlayingScreen(
 
     var showAddToPlaylist by remember { mutableStateOf(false) }
 
-    // Track whether the scroll was user-initiated via drag gestures
-    var isUserDragging by remember { mutableStateOf(false) }
-
     // Artwork swipe pager backed by queue index
     val pagerState = rememberPagerState(
         initialPage = currentIndex.coerceAtLeast(0),
         pageCount = { if (queue.isNotEmpty()) queue.size else 1 }
     )
 
-    LaunchedEffect(pagerState.interactionSource) {
-        pagerState.interactionSource.interactions.collect { interaction ->
-            when (interaction) {
-                is DragInteraction.Start -> {
-                    isUserDragging = true
-                }
-                is DragInteraction.Stop,
-                is DragInteraction.Cancel -> {
-                    // Do not reset here; keep true until settledPage processes the fling/drop
-                }
-            }
-        }
-    }
-
-    // Sync pager when track changes from playback/buttons (Media3 source of truth)
+    // Sync pager when track changes from playback/buttons (guarded against active user dragging)
     LaunchedEffect(currentIndex, queue.size) {
-        if (!isUserDragging && queue.isNotEmpty() && currentIndex in queue.indices && pagerState.currentPage != currentIndex) {
+        if (!pagerState.isScrollInProgress && queue.isNotEmpty() && currentIndex in queue.indices && pagerState.currentPage != currentIndex) {
             pagerState.animateScrollToPage(currentIndex)
         }
     }
 
-    // Only commit track change to Media3 when the user physically dragged/swiped the pager
-    LaunchedEffect(pagerState) {
-        snapshotFlow { pagerState.settledPage }.collect { settledPage ->
-            if (isUserDragging) {
-                isUserDragging = false
-                if (queue.isNotEmpty() && settledPage in queue.indices && settledPage != currentIndex) {
-                    android.util.Log.i("NowPlayingScreen", "QUEUE_TRANSITION: User swiped pager to $settledPage, committing to Media3")
-                    viewModel.playQueueItem(settledPage)
-                }
-            }
+    // When user swipes to another page, commit track change to single source of truth
+    LaunchedEffect(pagerState.settledPage) {
+        if (queue.isNotEmpty() && pagerState.settledPage in queue.indices && pagerState.settledPage != currentIndex) {
+            viewModel.playQueueItem(pagerState.settledPage)
         }
     }
 

@@ -10,7 +10,4 @@ interface PaletteDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(palette: ArtworkPalette)
-
-    @Query("DELETE FROM artwork_palettes")
-    suspend fun deleteAll()
 }
