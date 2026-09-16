@@ -91,4 +91,11 @@ class SongMenuViewModel @Inject constructor(
             repository.removeTrackFromPlaylist(playlistId, trackId)
         }
     }
+
+    fun fixWrongArtwork(trackId: Long, onDone: (() -> Unit)? = null) {
+        viewModelScope.launch {
+            repository.clearArtworkAndReenrich(trackId)
+            onDone?.invoke()
+        }
+    }
 }

@@ -307,7 +307,7 @@ class MetadataEnrichmentService @Inject constructor(
         }
 
         // Step 5: Merge metadata (strictly preserving genuine embedded fields)
-        val enriched = mergeMetadata(currentTrack, bestMatch, confidence)
+        val enriched = mergeMetadata(currentTrack, bestMatch, confidence, forceRefresh = forceRefresh)
 
         // Step 6: Persist track update in Room
         Log.i("DIAG_METADATA", "[Point 24] Track ID being updated in Room: ${enriched.id}")
@@ -464,7 +464,8 @@ class MetadataEnrichmentService @Inject constructor(
     suspend fun mergeMetadata(
         local: Track,
         remote: RemoteTrackMetadata,
-        confidence: String
+        confidence: String,
+        forceRefresh: Boolean = false,
     ): Track {
         val finalTitle = remote.title
         val finalArtist = remote.artist
@@ -491,21 +492,23 @@ class MetadataEnrichmentService @Inject constructor(
                 ?: artworkStorage.getLocalArtworkUri(local.albumId)
                 ?: local.artworkUri
             artworkSavedPath = finalArtworkUri
-        } else if (!hasValidArtwork(local)) {
+        } else {
             val cachedArt = artworkStorage.getLocalArtworkUri(newAlbumId)
-                ?: artworkStorage.getLocalArtworkUri(local.albumId)
-            if (cachedArt != null) {
+            if (cachedArt != null && !forceRefresh) {
                 finalArtworkUri = cachedArt
                 artworkSavedPath = cachedArt
             } else if (!remote.artworkUrl.isNullOrBlank()) {
-                val downloaded = artworkStorage.downloadAndStoreArtwork(newAlbumId, remote.artworkUrl)
+                val downloaded = artworkStorage.downloadAndStoreArtwork(newAlbumId, remote.artworkUrl, forceOverwrite = forceRefresh)
                 if (downloaded != null) {
                     finalArtworkUri = downloaded
                     artworkSavedPath = downloaded
                 }
+            } else if (cachedArt != null) {
+                finalArtworkUri = cachedArt
+                artworkSavedPath = cachedArt
+            } else {
+                artworkSavedPath = local.artworkUri
             }
-        } else {
-            artworkSavedPath = local.artworkUri
         }
 
         Log.i("DIAG_METADATA", "[Point 20] Final direct overwrite: title='$finalTitle', artist='$finalArtist', album='$finalAlbumTitle', year=$finalYear, genre=$finalGenre")

@@ -49,6 +49,7 @@ fun SongActionMenuSheet(
     onViewDetails: () -> Unit,
     onGoToAlbum: (() -> Unit)? = null,
     onGoToArtist: (() -> Unit)? = null,
+    onFixArtwork: (() -> Unit)? = null,
     // Cross-playlist actions when inside a playlist
     playlistId: Long? = null,
     onMoveToPlaylist: (() -> Unit)? = null,
@@ -178,6 +179,15 @@ fun SongActionMenuSheet(
                 title = "Share",
                 onClick = onShare,
             )
+
+            if (onFixArtwork != null) {
+                SongActionItem(
+                    icon = Icons.Rounded.ImageNotSupported,
+                    title = "Wrong album cover? Fix it",
+                    subtitle = "Clears cached cover and looks it up again",
+                    onClick = onFixArtwork,
+                )
+            }
 
             SongActionItem(
                 icon = Icons.Rounded.Info,
@@ -477,6 +487,15 @@ fun SongMenuContainer(
                     onNavigateToArtist(currentTrack.artist)
                 }
             } else null,
+            onFixArtwork = {
+                closeAll()
+                viewModel.fixWrongArtwork(currentTrack.id)
+                android.widget.Toast.makeText(
+                    context,
+                    "Searching for correct cover...",
+                    android.widget.Toast.LENGTH_SHORT
+                ).show()
+            },
             removeFromPlaylistLabel = if (playlistId != null) "Remove from this playlist" else null,
             onRequestRemoveFromPlaylist = if (playlistId != null) {
                 {

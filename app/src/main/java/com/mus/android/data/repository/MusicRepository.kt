@@ -25,6 +25,7 @@ class MusicRepository @Inject constructor(
     private val waveformExtractor: WaveformExtractor,
     private val userPreferences: UserPreferencesRepository,
     private val enrichmentService: com.mus.android.data.enrichment.MetadataEnrichmentService,
+    private val artworkStorage: com.mus.android.data.enrichment.artwork.ArtworkStorage,
 ) {
     private val _idMigrations = kotlinx.coroutines.flow.MutableSharedFlow<Map<Long, Long>>(replay = 0, extraBufferCapacity = 1)
     val idMigrations: kotlinx.coroutines.flow.SharedFlow<Map<Long, Long>> = _idMigrations
@@ -517,6 +518,26 @@ class MusicRepository @Inject constructor(
     suspend fun refreshTrackMetadata(trackId: Long) = withContext(Dispatchers.IO) {
         val track = trackDao.getTrackById(trackId) ?: return@withContext
         enrichmentService.enrichTrack(track, forceRefresh = true)
+    }
+
+    suspend fun clearArtworkAndReenrich(trackId: Long): Track? = withContext(Dispatchers.IO) {
+        val track = trackDao.getTrackById(trackId) ?: return@withContext null
+        artworkStorage.clearArtwork(track.albumId)
+
+        val resetTrack = track.copy(
+            artworkUri = null,
+            metadataStatus = MetadataStatus.NEEDS_LOOKUP,
+            metadataConfidence = MetadataConfidence.LOW,
+            metadataLastUpdated = 0L,
+        )
+        trackDao.update(resetTrack)
+
+        val album = albumDao.getAlbumById(track.albumId)
+        if (album != null) {
+            albumDao.insertAll(listOf(album.copy(artworkUri = null)))
+        }
+
+        enrichmentService.enrichTrack(resetTrack, forceRefresh = true)
     }
 
     // ── Waveform ──────────────────────────────────────────────

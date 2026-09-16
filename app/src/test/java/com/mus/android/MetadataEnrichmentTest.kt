@@ -581,6 +581,25 @@ class MetadataEnrichmentTest {
         assertEquals(2, fakeTrackDao.getAllTracksOnce().size)
     }
 
+    // 13. Wrong artwork can be cleared and replaced
+    @Test
+    fun testClearArtworkAndForceRefreshOverwritesRemoteArtwork() = runBlocking {
+        val albumId = 555L
+        val oldArtUri = artworkStorage.saveEmbeddedArtworkByKey("album_$albumId", "OLD_REMOTE_ART".toByteArray())
+        assertNotNull(oldArtUri)
+        assertEquals(oldArtUri, artworkStorage.getLocalArtworkUri(albumId))
+
+        // Simulate "this cover is wrong" -> clear artwork
+        val cleared = artworkStorage.clearArtwork(albumId)
+        assertTrue(cleared)
+        assertNull(artworkStorage.getLocalArtworkUri(albumId))
+
+        // Now save new remote art
+        val newArtUri = artworkStorage.saveEmbeddedArtworkByKey("album_$albumId", "NEW_REMOTE_ART".toByteArray())
+        assertNotNull(newArtUri)
+        assertEquals(newArtUri, artworkStorage.getLocalArtworkUri(albumId))
+    }
+
     // --- Test Doubles / Fakes ---
 
     class FakeMetadataProvider : MetadataProvider {
