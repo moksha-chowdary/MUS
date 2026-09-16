@@ -261,6 +261,20 @@ fun SettingsScreen(
                 }
             )
 
+            SettingsActionItem(
+                icon = Icons.Rounded.RestartAlt,
+                title = "Re-verify Library Metadata",
+                subtitle = "Re-evaluates uncertain matches and clears wrong remote covers",
+                onClick = {
+                    homeViewModel.reverifyLibrary()
+                    android.widget.Toast.makeText(
+                        context,
+                        "Re-verifying library metadata...",
+                        android.widget.Toast.LENGTH_SHORT
+                    ).show()
+                }
+            )
+
             Spacer(Modifier.height(Spacing.xl))
 
             // About Section

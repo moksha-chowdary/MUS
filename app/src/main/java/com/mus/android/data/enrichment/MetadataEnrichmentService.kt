@@ -136,8 +136,12 @@ class MetadataEnrichmentService @Inject constructor(
      */
     fun needsEnrichment(track: Track): Boolean {
         when (track.metadataStatus) {
-            MetadataStatus.COMPLETE -> return false
-            MetadataStatus.NEEDS_REVIEW -> return false
+            MetadataStatus.COMPLETE -> {
+                // If it was marked COMPLETE without HIGH confidence, it must be re-evaluated
+                if (track.metadataConfidence != MetadataConfidence.HIGH) return true
+                return false
+            }
+            MetadataStatus.NEEDS_REVIEW -> return true // Re-evaluate rather than freezing bad rows
             MetadataStatus.ENRICHING -> {
                 // Do not enqueue again unless stale (> 5 minutes)
                 val isStale = System.currentTimeMillis() - track.metadataLastUpdated > 5 * 60 * 1000L

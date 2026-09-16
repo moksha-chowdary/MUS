@@ -636,6 +636,79 @@ class MetadataEnrichmentTest {
         assertTrue("Expected US storefront fallback attempt after regional store had no results", fakeProvider.countriesQueried.contains("US"))
     }
 
+    // 15. Repairing existing data: terminal statuses and re-verification
+    @Test
+    fun testNeedsEnrichmentDoesNotFreezeNeedsReviewOrNonHighConfidence() {
+        val reviewTrack = Track(
+            id = 701L,
+            title = "Kesariya",
+            artist = "Arijit Singh",
+            albumId = 701L,
+            albumTitle = "Brahmastra",
+            duration = 260000L,
+            uri = "/701.mp3",
+            artworkUri = "file:///art/test.jpg",
+            metadataStatus = MetadataStatus.NEEDS_REVIEW,
+            metadataConfidence = MetadataConfidence.LOW,
+        )
+        assertTrue("NEEDS_REVIEW tracks must not be frozen and should be re-evaluated", enrichmentService.needsEnrichment(reviewTrack))
+
+        val completeLowConfidenceTrack = reviewTrack.copy(
+            metadataStatus = MetadataStatus.COMPLETE,
+            metadataConfidence = MetadataConfidence.LOW,
+        )
+        assertTrue("COMPLETE tracks with LOW confidence must be eligible for re-evaluation", enrichmentService.needsEnrichment(completeLowConfidenceTrack))
+
+        val genuinelyCompleteTrack = reviewTrack.copy(
+            metadataStatus = MetadataStatus.COMPLETE,
+            metadataConfidence = MetadataConfidence.HIGH,
+        )
+        assertFalse("COMPLETE tracks with HIGH confidence and all valid fields should not re-enrich", enrichmentService.needsEnrichment(genuinelyCompleteTrack))
+    }
+
+    @Test
+    fun testLibraryReverificationResetsUncertainTracksAndClearsRemoteArtwork() = runBlocking {
+        val albumId = 801L
+        val remoteArtUri = artworkStorage.saveEmbeddedArtworkByKey("album_$albumId", "REMOTE_COVER".toByteArray())
+        assertNotNull(remoteArtUri)
+
+        val uncertainTrack = Track(
+            id = 801L,
+            title = "Uncertain Song",
+            artist = "Artist",
+            albumId = albumId,
+            albumTitle = "Album",
+            duration = 200000L,
+            uri = "/801.mp3",
+            artworkUri = remoteArtUri,
+            metadataStatus = MetadataStatus.NEEDS_REVIEW,
+            metadataConfidence = MetadataConfidence.LOW,
+        )
+        fakeTrackDao.insert(uncertainTrack)
+
+        // Simulate reverify pass:
+        val hasEmbedded = artworkStorage.isEmbeddedArtwork(uncertainTrack.artworkUri) ||
+                artworkStorage.hasEmbeddedArtwork(uncertainTrack.albumId)
+        assertFalse(hasEmbedded)
+
+        artworkStorage.clearRemoteArtwork(uncertainTrack.albumId)
+        assertNull(artworkStorage.getLocalArtworkUri(albumId))
+
+        val resetTrack = uncertainTrack.copy(
+            artworkUri = null,
+            metadataStatus = MetadataStatus.NEEDS_LOOKUP,
+            metadataConfidence = MetadataConfidence.LOW,
+            metadataLastUpdated = 0L,
+        )
+        fakeTrackDao.update(resetTrack)
+
+        val retrieved = fakeTrackDao.getTrackById(801L)
+        assertNotNull(retrieved)
+        assertEquals(MetadataStatus.NEEDS_LOOKUP, retrieved!!.metadataStatus)
+        assertEquals(MetadataConfidence.LOW, retrieved.metadataConfidence)
+        assertNull(retrieved.artworkUri)
+    }
+
     // --- Test Doubles / Fakes ---
 
     class FakeMetadataProvider : MetadataProvider {
@@ -708,6 +781,9 @@ class MetadataEnrichmentTest {
 
     open class TestUserPreferencesRepository : UserPreferencesRepository(TestContext()) {
         private val _autoMeta = kotlinx.coroutines.flow.MutableStateFlow(true)
+        private var _migrationVersion = 0
         override val automaticMetadataEnabled: kotlinx.coroutines.flow.StateFlow<Boolean> get() = _autoMeta
+        override fun getMetadataMigrationVersion(): Int = _migrationVersion
+        override fun setMetadataMigrationVersion(version: Int) { _migrationVersion = version }
     }
 }

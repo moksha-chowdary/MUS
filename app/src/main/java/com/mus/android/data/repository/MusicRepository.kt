@@ -4,6 +4,7 @@ import androidx.room.withTransaction
 import com.mus.android.data.db.*
 import com.mus.android.data.model.*
 import com.mus.android.data.scanner.MediaStoreScanner
+import com.mus.android.data.scanner.MetadataUtils
 import com.mus.android.data.scanner.WaveformExtractor
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -33,6 +34,7 @@ class MusicRepository @Inject constructor(
     init {
         CoroutineScope(Dispatchers.IO).launch {
             reconcileFolderPlaylists()
+            checkAndRunMetadataMigration()
         }
     }
 
@@ -538,6 +540,60 @@ class MusicRepository @Inject constructor(
         }
 
         enrichmentService.enrichTrack(resetTrack, forceRefresh = true)
+    }
+
+    private suspend fun checkAndRunMetadataMigration() {
+        if (userPreferences.getMetadataMigrationVersion() < 2) {
+            reverifyLibrary(forceAll = false)
+            userPreferences.setMetadataMigrationVersion(2)
+        }
+    }
+
+    /**
+     * Re-evaluates metadata and artwork across the library.
+     * Resets tracks that were matched at low/medium confidence, flagged for review,
+     * or missing fields. Safely purges non-embedded remote artwork cache while preserving
+     * embedded artwork. Safe to call multiple times.
+     */
+    suspend fun reverifyLibrary(forceAll: Boolean = false) = withContext(Dispatchers.IO) {
+        val allTracks = trackDao.getAllTracksOnce()
+        val tracksToReverify = mutableListOf<Track>()
+
+        for (track in allTracks) {
+            val isLowConfidence = track.metadataConfidence != MetadataConfidence.HIGH
+            val isReviewOrPartial = track.metadataStatus == MetadataStatus.NEEDS_REVIEW ||
+                    track.metadataStatus == MetadataStatus.PARTIAL ||
+                    track.metadataStatus == MetadataStatus.FAILED
+            val isPlaceholderText = MetadataUtils.isPlaceholderTitle(track.title) ||
+                    MetadataUtils.isPlaceholderArtist(track.artist) ||
+                    MetadataUtils.isPlaceholderAlbum(track.albumTitle)
+
+            if (forceAll || isLowConfidence || isReviewOrPartial || isPlaceholderText) {
+                // Safely purge remote artwork if no embedded artwork is present
+                val hasEmbedded = artworkStorage.isEmbeddedArtwork(track.artworkUri) ||
+                        artworkStorage.hasEmbeddedArtwork(track.albumId)
+                if (!hasEmbedded) {
+                    artworkStorage.clearRemoteArtwork(track.albumId)
+                    val album = albumDao.getAlbumById(track.albumId)
+                    if (album != null && !artworkStorage.isEmbeddedArtwork(album.artworkUri)) {
+                        albumDao.insertAll(listOf(album.copy(artworkUri = null)))
+                    }
+                }
+
+                val resetTrack = track.copy(
+                    artworkUri = if (!hasEmbedded) null else track.artworkUri,
+                    metadataStatus = MetadataStatus.NEEDS_LOOKUP,
+                    metadataConfidence = MetadataConfidence.LOW,
+                    metadataLastUpdated = 0L,
+                )
+                trackDao.update(resetTrack)
+                tracksToReverify.add(resetTrack)
+            }
+        }
+
+        if (tracksToReverify.isNotEmpty()) {
+            enrichmentService.enqueueEnrichment(tracksToReverify)
+        }
     }
 
     // ── Waveform ──────────────────────────────────────────────

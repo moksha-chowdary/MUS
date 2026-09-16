@@ -248,6 +248,17 @@ class HomeViewModel @Inject constructor(
         }
     }
 
+    fun reverifyLibrary() {
+        viewModelScope.launch {
+            _isLoading.value = true
+            try {
+                repository.reverifyLibrary()
+            } finally {
+                _isLoading.value = false
+            }
+        }
+    }
+
     fun refreshLibrary() {
         viewModelScope.launch { scanDevice() }
     }

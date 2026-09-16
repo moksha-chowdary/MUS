@@ -41,4 +41,20 @@ open class UserPreferencesRepository @Inject constructor(
         prefs.edit().putBoolean("automatic_metadata_enabled", enabled).apply()
         _automaticMetadataEnabled.value = enabled
     }
+
+    open fun getMetadataMigrationVersion(): Int {
+        return try {
+            prefs.getInt("metadata_migration_version", 0)
+        } catch (e: Throwable) {
+            0
+        }
+    }
+
+    open fun setMetadataMigrationVersion(version: Int) {
+        try {
+            prefs.edit().putInt("metadata_migration_version", version).apply()
+        } catch (e: Throwable) {
+            // No-op in environments without real SharedPreferences
+        }
+    }
 }
