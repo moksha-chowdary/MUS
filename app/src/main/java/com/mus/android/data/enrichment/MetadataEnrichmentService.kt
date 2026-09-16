@@ -45,12 +45,20 @@ class MetadataEnrichmentService @Inject constructor(
     private var lastRequestTime = 0L
     private val rateLimitLock = Any()
 
+    // iTunes Search is an unauthenticated endpoint limited to roughly 20 calls/minute.
+    // The previous 600ms gap allowed ~100/minute, i.e. about 5x over the limit, so a
+    // library scan reliably tripped HTTP 403 and stopped returning artwork partway through.
+    @Volatile private var backoffUntil = 0L
+
     private suspend fun throttleRequest() {
+        val cooldown = backoffUntil - System.currentTimeMillis()
+        if (cooldown > 0L) delay(cooldown)
+
         val waitTime = synchronized(rateLimitLock) {
             val now = System.currentTimeMillis()
             val elapsed = now - lastRequestTime
-            if (elapsed < 600L) {
-                val toWait = 600L - elapsed
+            if (elapsed < MIN_REQUEST_GAP_MS) {
+                val toWait = MIN_REQUEST_GAP_MS - elapsed
                 lastRequestTime = now + toWait
                 toWait
             } else {
@@ -61,6 +69,11 @@ class MetadataEnrichmentService @Inject constructor(
         if (waitTime > 0L) {
             delay(waitTime)
         }
+    }
+
+    /** Pauses all provider traffic after Apple rejects us, so one 403 doesn't cascade. */
+    private fun enterBackoff() {
+        backoffUntil = System.currentTimeMillis() + RATE_LIMIT_COOLDOWN_MS
     }
 
     /**
@@ -96,14 +109,21 @@ class MetadataEnrichmentService @Inject constructor(
      * Can be invoked directly from UI or ViewModel for "Refresh Metadata".
      */
     suspend fun enrichTrack(track: Track, forceRefresh: Boolean = true): Track = withContext(Dispatchers.IO) {
-        if (inFlightTrackIds.add(track.id)) {
-            try {
-                enrichTrackInternal(track, forceRefresh)
-            } finally {
-                inFlightTrackIds.remove(track.id)
+        // Must go through the SAME semaphore + throttle as the automatic path.
+        // "Refresh All Metadata" loops this over the whole library, so without the
+        // throttle it fires unlimited back-to-back iTunes requests, Apple returns
+        // HTTP 403/429 for the rest of the run, and no artwork downloads at all.
+        concurrencySemaphore.withPermit {
+            throttleRequest()
+            if (inFlightTrackIds.add(track.id)) {
+                try {
+                    enrichTrackInternal(track, forceRefresh)
+                } finally {
+                    inFlightTrackIds.remove(track.id)
+                }
+            } else {
+                track
             }
-        } else {
-            track
         }
     }
 
@@ -210,33 +230,60 @@ class MetadataEnrichmentService @Inject constructor(
             return offlineTrack
         }
 
-        // Step 3: Construct search query using cleaned artist and title hints
-        val query = buildSearchQuery(currentTrack)
-        if (query.isBlank()) {
+        // Step 3: Build an ordered list of queries to try. The first entry is exactly the
+        // query this code has always produced, so normal behaviour is unchanged. The extra
+        // entry is a bare song-title retry, used only when the specific query finds nothing
+        // usable — it rescues downloaded files whose filename carries a site name, bitrate
+        // or uploader tag next to the real title.
+        val queries = buildSearchQueries(currentTrack)
+        if (queries.isEmpty()) {
             Log.d(TAG, "Cannot construct query for track ${currentTrack.id}.")
             return currentTrack
         }
 
-        Log.i("DIAG_METADATA", "[Point 16] Exact iTunes query generated: '$query'")
-        val searchResults = try {
-            metadataProvider.searchTrack(query, limit = 5)
-        } catch (e: Exception) {
-            Log.w(TAG, "Provider lookup failed for '$query': ${e.message}")
-            if (e.message?.contains("rate limit", ignoreCase = true) == true) {
-                delay(3000L)
+        var bestMatch: RemoteTrackMetadata? = null
+        var confidence = MetadataConfidence.LOW
+        var sawAnyResult = false
+
+        for ((attempt, query) in queries.withIndex()) {
+            if (attempt > 0) throttleRequest()
+            Log.i("DIAG_METADATA", "[Point 16] iTunes query attempt ${attempt + 1}: '$query'")
+
+            val searchResults = try {
+                metadataProvider.searchTrack(query, limit = 5)
+            } catch (e: Exception) {
+                Log.w(TAG, "Provider lookup failed for '$query': ${e.message}")
+                if (e.message?.contains("rate limit", ignoreCase = true) == true) {
+                    // Stop hammering Apple for a while — every subsequent track in this run
+                    // would otherwise fail the same way and end up with no artwork.
+                    enterBackoff()
+                }
+                val errorTrack = currentTrack.copy(
+                    metadataStatus = MetadataStatus.NEEDS_LOOKUP,
+                    metadataLastUpdated = System.currentTimeMillis()
+                )
+                trackDao.update(errorTrack)
+                return errorTrack
             }
-            val errorTrack = currentTrack.copy(
-                metadataStatus = MetadataStatus.NEEDS_LOOKUP,
-                metadataLastUpdated = System.currentTimeMillis()
-            )
-            trackDao.update(errorTrack)
-            return errorTrack
+
+            Log.i("DIAG_METADATA", "[Point 17] iTunes result count for attempt ${attempt + 1}: ${searchResults.size}")
+            if (searchResults.isEmpty()) continue
+            sawAnyResult = true
+
+            val (candidate, candidateConfidence) = findBestMatch(currentTrack, searchResults)
+            if (candidate != null && candidateConfidence != MetadataConfidence.LOW) {
+                bestMatch = candidate
+                confidence = candidateConfidence
+                break
+            }
+            if (candidate != null && bestMatch == null) {
+                bestMatch = candidate
+                confidence = candidateConfidence
+            }
         }
 
-        Log.i("DIAG_METADATA", "[Point 17] iTunes HTTP response/result count: ${searchResults.size}")
-
-        if (searchResults.isEmpty()) {
-            Log.d(TAG, "No matches found for query: '$query'")
+        if (!sawAnyResult) {
+            Log.d(TAG, "No matches found for any query variant of track ${currentTrack.id}")
             val notFoundTrack = currentTrack.copy(
                 metadataStatus = MetadataStatus.FAILED,
                 metadataLastUpdated = System.currentTimeMillis()
@@ -245,8 +292,6 @@ class MetadataEnrichmentService @Inject constructor(
             return notFoundTrack
         }
 
-        // Step 4: Evaluate candidates and calculate match confidence
-        val (bestMatch, confidence) = findBestMatch(currentTrack, searchResults)
         Log.i("DIAG_METADATA", "[Point 18] Selected iTunes result: '${bestMatch?.title}' by '${bestMatch?.artist}'")
         Log.i("DIAG_METADATA", "[Point 19] Calculated confidence: $confidence")
 
@@ -276,6 +321,31 @@ class MetadataEnrichmentService @Inject constructor(
     }
 
     /**
+     * Ordered query variants to try against the provider, most specific first.
+     *
+     * [0] = the existing buildSearchQuery result — unchanged behaviour.
+     * [1] = the bare song title. This is the "just search the downloaded song's title"
+     *       path: when a filename is "Some Song (128kbps) - SiteName", the combined
+     *       artist+title query matches nothing, but the title alone usually does.
+     */
+    fun buildSearchQueries(track: Track): List<String> {
+        val primary = buildSearchQuery(track)
+        val hints = MetadataUtils.parseFilenameHints(track.path ?: track.uri)
+
+        val rawTitle = when {
+            hints.titleHint.isNotBlank() && hints.titleHint != "Unknown Track" -> hints.titleHint
+            !MetadataUtils.isPlaceholderTitle(track.title) -> track.title
+            else -> ""
+        }
+        val titleOnly = MetadataUtils.cleanNoise(rawTitle).trim()
+
+        return listOf(primary, titleOnly)
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .distinct()
+    }
+
+    /**
      * Builds the most specific search query possible from available metadata and filename hints.
      */
     fun buildSearchQuery(track: Track): String {
@@ -298,7 +368,10 @@ class MetadataEnrichmentService @Inject constructor(
     }
 
     /**
-     * Scores candidates and assigns a Confidence level (HIGH, MEDIUM, LOW).
+     * Scores candidates and assigns a Confidence level.
+     * Requires minimum title similarity (>= 0.60), disqualifies candidates with
+     * large duration mismatches (> 30s) or missing local title signal, and requires
+     * a minimum score of 50 to accept (resolving strictly to HIGH or LOW).
      */
     fun findBestMatch(
         track: Track,
@@ -306,49 +379,66 @@ class MetadataEnrichmentService @Inject constructor(
     ): Pair<RemoteTrackMetadata?, String> {
         if (candidates.isEmpty()) return Pair(null, MetadataConfidence.LOW)
 
-        var bestCandidate: RemoteTrackMetadata? = null
-        var highestScore = -100
-
         val hints = MetadataUtils.parseFilenameHints(track.path ?: track.uri)
         val targetArtist = if (!MetadataUtils.isPlaceholderArtist(track.artist)) track.artist else hints.artistHint
         val targetTitle = if (!MetadataUtils.isPlaceholderTitle(track.title)) track.title else hints.titleHint
 
-        val targetTitleNorm = MetadataUtils.normalizeString(targetTitle ?: "")
-        val targetArtistNorm = MetadataUtils.normalizeString(targetArtist ?: "")
+        val isTitleKnown = !MetadataUtils.isPlaceholderTitle(targetTitle) && !targetTitle.isNullOrBlank()
+        if (!isTitleKnown) {
+            // Never guess if there is no usable local title signal
+            return Pair(null, MetadataConfidence.LOW)
+        }
 
-        val isArtistKnown = targetArtistNorm.isNotBlank() && targetArtistNorm != "unknown artist"
-        val isTitleKnown = targetTitleNorm.isNotBlank() && targetTitleNorm != "unknown track"
+        val targetTitleStr = targetTitle!!
+        val isArtistKnown = !MetadataUtils.isPlaceholderArtist(targetArtist) && !targetArtist.isNullOrBlank()
+
+        var bestCandidate: RemoteTrackMetadata? = null
+        var highestScore = -100
 
         for (candidate in candidates) {
-            var score = 0
-            val candidateTitleNorm = MetadataUtils.normalizeString(candidate.title)
-            val candidateArtistNorm = MetadataUtils.normalizeString(candidate.artist)
+            // 1. Title Similarity Check (HARD REQUIREMENT)
+            // Never accept on artist + duration alone!
+            val titleSim = MetadataUtils.calculateTitleSimilarity(targetTitleStr, candidate.title)
+            if (titleSim < 0.60) {
+                continue
+            }
 
-            // Title Matching
-            if (isTitleKnown) {
-                when {
-                    candidateTitleNorm == targetTitleNorm -> score += 50
-                    candidateTitleNorm.contains(targetTitleNorm) || targetTitleNorm.contains(candidateTitleNorm) -> score += 40
-                    else -> score -= 25
+            // 2. Duration Mismatch Check (HARD REQUIREMENT)
+            // Treat a large duration mismatch (> 30s) as disqualifying
+            var diffSeconds = 0L
+            if (track.duration > 0 && candidate.durationMs > 0) {
+                diffSeconds = abs(track.duration - candidate.durationMs) / 1000
+                if (diffSeconds > 30) {
+                    continue
                 }
+            }
+
+            // 3. Scoring
+            var score = (titleSim * 50).toInt()
+            if (titleSim >= 0.95) {
+                score += 5 // bonus for near-exact match
             }
 
             // Artist Matching
             if (isArtistKnown) {
+                val artistSim = MetadataUtils.calculateTitleSimilarity(targetArtist!!, candidate.artist)
+                val targetArtistNorm = MetadataUtils.normalizeString(targetArtist)
+                val candidateArtistNorm = MetadataUtils.normalizeString(candidate.artist)
+
                 when {
-                    candidateArtistNorm == targetArtistNorm -> score += 40
-                    candidateArtistNorm.contains(targetArtistNorm) || targetArtistNorm.contains(candidateArtistNorm) -> score += 30
-                    else -> score -= 20
+                    targetArtistNorm == candidateArtistNorm || artistSim >= 0.9 -> score += 35
+                    artistSim >= 0.6 || candidateArtistNorm.contains(targetArtistNorm) || targetArtistNorm.contains(candidateArtistNorm) -> score += 20
+                    artistSim < 0.3 -> score -= 25 // severe artist mismatch penalty
+                    else -> score += 5
                 }
             }
 
-            // Duration Matching (if available)
+            // Duration Matching
             if (track.duration > 0 && candidate.durationMs > 0) {
-                val diffSeconds = abs(track.duration - candidate.durationMs) / 1000
                 when {
-                    diffSeconds <= 5 -> score += 20
+                    diffSeconds <= 5 -> score += 15
                     diffSeconds <= 15 -> score += 10
-                    diffSeconds > 90 -> score -= 20
+                    diffSeconds <= 30 -> score += 0
                 }
             }
 
@@ -358,13 +448,12 @@ class MetadataEnrichmentService @Inject constructor(
             }
         }
 
-        val confidence = when {
-            highestScore >= 45 -> MetadataConfidence.HIGH
-            highestScore >= 25 -> MetadataConfidence.MEDIUM
-            else -> MetadataConfidence.LOW
+        // Require minimum absolute score of 50 to accept
+        return if (bestCandidate != null && highestScore >= 50) {
+            Pair(bestCandidate, MetadataConfidence.HIGH)
+        } else {
+            Pair(null, MetadataConfidence.LOW)
         }
-
-        return Pair(bestCandidate, confidence)
     }
 
     /**
@@ -535,5 +624,9 @@ class MetadataEnrichmentService @Inject constructor(
 
     companion object {
         private const val TAG = "MetadataEnrichment"
+        /** ~20 requests/minute — under the iTunes Search unauthenticated ceiling. */
+        private const val MIN_REQUEST_GAP_MS = 3_000L
+        /** Quiet period after a 403/429 before any further provider calls. */
+        private const val RATE_LIMIT_COOLDOWN_MS = 60_000L
     }
 }

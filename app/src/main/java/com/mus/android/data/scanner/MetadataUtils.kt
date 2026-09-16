@@ -71,6 +71,80 @@ object MetadataUtils {
     }
 
     /**
+     * Calculates the Levenshtein edit distance between two character sequences.
+     */
+    fun calculateLevenshteinDistance(s1: String, s2: String): Int {
+        if (s1 == s2) return 0
+        if (s1.isEmpty()) return s2.length
+        if (s2.isEmpty()) return s1.length
+
+        var prev = IntArray(s2.length + 1) { it }
+        var curr = IntArray(s2.length + 1)
+
+        for (i in s1.indices) {
+            curr[0] = i + 1
+            val c1 = s1[i]
+            for (j in s2.indices) {
+                val cost = if (c1 == s2[j]) 0 else 1
+                curr[j + 1] = minOf(
+                    curr[j] + 1,        // insertion
+                    prev[j + 1] + 1,    // deletion
+                    prev[j] + cost      // substitution
+                )
+            }
+            val temp = prev
+            prev = curr
+            curr = temp
+        }
+        return prev[s2.length]
+    }
+
+    /**
+     * Extracts clean alphanumeric tokens from text after removing noise.
+     */
+    fun tokenize(input: String): List<String> {
+        val cleaned = cleanNoise(input)
+        return cleaned.lowercase()
+            .split(Regex("[^a-z0-9]+"))
+            .filter { it.isNotBlank() }
+    }
+
+    /**
+     * Computes robust title similarity (0.0 to 1.0) combining token-set overlap and Levenshtein ratio.
+     * Accurately matches tracks with reordered tags, suffixes, or minor spelling variations,
+     * while decisively rejecting different songs.
+     */
+    fun calculateTitleSimilarity(s1: String, s2: String): Double {
+        val t1 = cleanNoise(s1).trim()
+        val t2 = cleanNoise(s2).trim()
+        if (t1.equals(t2, ignoreCase = true)) return 1.0
+
+        val tokens1 = tokenize(t1).toSet()
+        val tokens2 = tokenize(t2).toSet()
+        if (tokens1.isEmpty() || tokens2.isEmpty()) return 0.0
+
+        val common = (tokens1 intersect tokens2).size
+        val dice = (2.0 * common) / (tokens1.size + tokens2.size)
+        val minSize = minOf(tokens1.size, tokens2.size)
+        val containment = if (minSize > 0) common.toDouble() / minSize else 0.0
+
+        val norm1 = t1.lowercase().replace(Regex("[^a-z0-9]"), "")
+        val norm2 = t2.lowercase().replace(Regex("[^a-z0-9]"), "")
+        val maxLen = maxOf(norm1.length, norm2.length)
+        val levRatio = if (maxLen == 0) 1.0 else 1.0 - (calculateLevenshteinDistance(norm1, norm2).toDouble() / maxLen)
+
+        val tokenScore = if (containment >= 1.0 && minSize >= 2) {
+            maxOf(dice, 0.8)
+        } else if (containment >= 0.8 && minSize >= 2) {
+            maxOf(dice, 0.7)
+        } else {
+            dice
+        }
+
+        return maxOf(levRatio, tokenScore)
+    }
+
+    /**
      * Generates a deterministic artwork key:
      * - If album and artist are known: "album_${albumId}"
      * - If either is placeholder (undetermined album): "file_${fileHash}" using stable physical file identity

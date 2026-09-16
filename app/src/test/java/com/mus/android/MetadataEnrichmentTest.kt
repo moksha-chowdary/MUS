@@ -250,6 +250,84 @@ class MetadataEnrichmentTest {
 
         val (match, confidence) = enrichmentService.findBestMatch(localTrack, totallyUnrelatedCandidates)
         assertEquals(MetadataConfidence.LOW, confidence)
+        assertNull(match)
+    }
+
+    // 6b. Bug 1 Core Test: Same artist + identical duration + DIFFERENT title MUST be rejected!
+    @Test
+    fun testSameArtistSimilarDurationDifferentTitleIsRejected() {
+        val localTrack = Track(
+            id = 107L,
+            title = "Save Your Tears",
+            artist = "The Weeknd",
+            albumId = 207L,
+            albumTitle = "Unknown Album",
+            duration = 200000L,
+            uri = "/Muzic/save_your_tears.mp3",
+            path = "/Muzic/save_your_tears.mp3",
+        )
+
+        // Candidate has the EXACT same artist and EXACT same duration, but is a DIFFERENT song
+        val wrongSongCandidates = listOf(
+            RemoteTrackMetadata(
+                title = "Blinding Lights",
+                artist = "The Weeknd",
+                albumTitle = "After Hours",
+                durationMs = 200000L,
+                artworkUrl = "https://example.com/blinding_lights.jpg",
+            )
+        )
+
+        val (bestMatch, confidence) = enrichmentService.findBestMatch(localTrack, wrongSongCandidates)
+        // Must NEVER match a different song just because artist and duration match!
+        assertNull("Candidate with different title must not be selected", bestMatch)
+        assertEquals(MetadataConfidence.LOW, confidence)
+    }
+
+    // 6c. Test that missing local title signal rejects any match rather than guessing
+    @Test
+    fun testMissingLocalTitleSignalRejectsCandidates() {
+        val untaggedNoHintTrack = Track(
+            id = 108L,
+            title = "Unknown Track",
+            artist = "Unknown Artist",
+            albumId = 208L,
+            albumTitle = "Unknown Album",
+            duration = 200000L,
+            uri = "/Muzic/track01.mp3",
+            path = "/Muzic/track01.mp3",
+        )
+
+        val candidates = listOf(
+            RemoteTrackMetadata(
+                title = "Blinding Lights",
+                artist = "The Weeknd",
+                albumTitle = "After Hours",
+                durationMs = 200000L,
+            )
+        )
+
+        val (bestMatch, confidence) = enrichmentService.findBestMatch(untaggedNoHintTrack, candidates)
+        assertNull(bestMatch)
+        assertEquals(MetadataConfidence.LOW, confidence)
+    }
+
+    // 6d. Test title similarity calculation
+    @Test
+    fun testTitleSimilarityMeasures() {
+        // High similarity: variations and subtitles
+        val sim1 = MetadataUtils.calculateTitleSimilarity("Blinding Lights", "Blinding Lights (Official Music Video)")
+        assertTrue("Subtitled title should have high similarity: $sim1", sim1 >= 0.8)
+
+        val sim2 = MetadataUtils.calculateTitleSimilarity("FE!N", "FE!N ft. Playboi Carti")
+        assertTrue("Feat variation should have high similarity: $sim2", sim2 >= 0.7)
+
+        // Low similarity: completely different songs
+        val sim3 = MetadataUtils.calculateTitleSimilarity("Save Your Tears", "Blinding Lights")
+        assertTrue("Different songs must have low similarity: $sim3", sim3 < 0.3)
+
+        val sim4 = MetadataUtils.calculateTitleSimilarity("Samajavaragamana", "Ramuloo Ramulaa")
+        assertTrue("Different regional songs must have low similarity: $sim4", sim4 < 0.4)
     }
 
     // 7. Artwork is stored locally
