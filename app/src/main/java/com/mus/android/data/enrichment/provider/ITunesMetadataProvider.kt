@@ -21,7 +21,7 @@ class ITunesMetadataProvider @Inject constructor() : MetadataProvider {
 
     override val name: String = "iTunes"
 
-    override suspend fun searchTrack(query: String, limit: Int): List<RemoteTrackMetadata> = withContext(Dispatchers.IO) {
+    override suspend fun searchTrack(query: String, limit: Int, country: String?): List<RemoteTrackMetadata> = withContext(Dispatchers.IO) {
         val trimmedQuery = query.trim()
         if (trimmedQuery.isBlank()) return@withContext emptyList()
 
@@ -31,7 +31,8 @@ class ITunesMetadataProvider @Inject constructor() : MetadataProvider {
             attempts++
             try {
                 val encodedQuery = URLEncoder.encode(trimmedQuery, "UTF-8")
-                val endpoint = "https://itunes.apple.com/search?term=$encodedQuery&media=music&entity=song&limit=$limit"
+                val countryParam = if (!country.isNullOrBlank()) "&country=${country.trim().lowercase()}" else ""
+                val endpoint = "https://itunes.apple.com/search?term=$encodedQuery&media=music&entity=song&limit=$limit$countryParam"
                 val url = URL(endpoint)
 
                 connection = (url.openConnection() as HttpURLConnection).apply {

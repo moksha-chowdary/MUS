@@ -21,5 +21,5 @@ data class RemoteTrackMetadata(
  */
 interface MetadataProvider {
     val name: String
-    suspend fun searchTrack(query: String, limit: Int = 5): List<RemoteTrackMetadata>
+    suspend fun searchTrack(query: String, limit: Int = 5, country: String? = null): List<RemoteTrackMetadata>
 }

@@ -600,15 +600,57 @@ class MetadataEnrichmentTest {
         assertEquals(newArtUri, artworkStorage.getLocalArtworkUri(albumId))
     }
 
+    // 14. Regional storefront selection and order
+    @Test
+    fun testRegionalCountrySelectionForIndianLanguages() {
+        val teluguTrack = Track(id = 1L, title = "Samajavaragamana", artist = "Sid Sriram", albumId = 1L, albumTitle = "Ala Vaikunthapurramuloo", duration = 210000L, uri = "/1.mp3", language = "Telugu")
+        val tamilTrack = Track(id = 2L, title = "Rowdy Baby", artist = "Dhanush", albumId = 2L, albumTitle = "Maari 2", duration = 240000L, uri = "/2.mp3", language = "Tamil")
+        val hindiTrack = Track(id = 3L, title = "Kesariya", artist = "Arijit Singh", albumId = 3L, albumTitle = "Brahmastra", duration = 260000L, uri = "/3.mp3", language = "Hindi")
+
+        assertEquals("IN", enrichmentService.determineCountryForTrack(teluguTrack))
+        assertEquals("IN", enrichmentService.determineCountryForTrack(tamilTrack))
+        assertEquals("IN", enrichmentService.determineCountryForTrack(hindiTrack))
+    }
+
+    @Test
+    fun testRegionalStorefrontQueriedFirstBeforeUS() = runBlocking {
+        val teluguTrack = Track(
+            id = 601L,
+            title = "Samajavaragamana",
+            artist = "Sid Sriram",
+            albumId = 601L,
+            albumTitle = "Ala Vaikunthapurramuloo",
+            duration = 214000L,
+            uri = "/Muzic/Samajavaragamana.mp3",
+            language = "Telugu",
+            metadataStatus = MetadataStatus.NEEDS_LOOKUP,
+        )
+
+        fakeTrackDao.insert(teluguTrack)
+        fakeProvider.mockResults = emptyList() // will cause it to exhaust IN and try US
+
+        enrichmentService.enrichTrack(teluguTrack, forceRefresh = true)
+
+        assertTrue(fakeProvider.countriesQueried.isNotEmpty())
+        assertEquals("IN", fakeProvider.countriesQueried.first())
+        assertTrue("Expected US storefront fallback attempt after regional store had no results", fakeProvider.countriesQueried.contains("US"))
+    }
+
     // --- Test Doubles / Fakes ---
 
     class FakeMetadataProvider : MetadataProvider {
         override val name: String = "FakeProvider"
         var searchCallCount = 0
+        var lastQuery: String? = null
+        var lastCountry: String? = null
+        val countriesQueried = mutableListOf<String?>()
         var mockResults: List<RemoteTrackMetadata> = emptyList()
 
-        override suspend fun searchTrack(query: String, limit: Int): List<RemoteTrackMetadata> {
+        override suspend fun searchTrack(query: String, limit: Int, country: String?): List<RemoteTrackMetadata> {
             searchCallCount++
+            lastQuery = query
+            lastCountry = country
+            countriesQueried.add(country)
             return mockResults
         }
     }

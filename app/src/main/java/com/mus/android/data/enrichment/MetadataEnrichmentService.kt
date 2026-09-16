@@ -10,11 +10,13 @@ import com.mus.android.data.db.TrackDao
 import com.mus.android.data.enrichment.artwork.ArtworkStorage
 import com.mus.android.data.enrichment.provider.MetadataProvider
 import com.mus.android.data.enrichment.provider.RemoteTrackMetadata
+import com.mus.android.data.classifier.LanguageClassifier
 import com.mus.android.data.model.*
 import com.mus.android.data.repository.UserPreferencesRepository
 import com.mus.android.data.scanner.MetadataUtils
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.*
+import java.util.Locale
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import java.io.File
@@ -241,44 +243,55 @@ class MetadataEnrichmentService @Inject constructor(
             return currentTrack
         }
 
+        val regionalCountry = determineCountryForTrack(currentTrack)
+        val countriesToTry = if (regionalCountry.equals("US", ignoreCase = true)) {
+            listOf("US")
+        } else {
+            listOf(regionalCountry, "US")
+        }
+
         var bestMatch: RemoteTrackMetadata? = null
         var confidence = MetadataConfidence.LOW
         var sawAnyResult = false
+        var attemptCount = 0
 
-        for ((attempt, query) in queries.withIndex()) {
-            if (attempt > 0) throttleRequest()
-            Log.i("DIAG_METADATA", "[Point 16] iTunes query attempt ${attempt + 1}: '$query'")
+        searchLoop@ for (country in countriesToTry) {
+            for (query in queries) {
+                if (attemptCount > 0) throttleRequest()
+                attemptCount++
+                Log.i("DIAG_METADATA", "[Point 16] iTunes query attempt $attemptCount (country=$country): '$query'")
 
-            val searchResults = try {
-                metadataProvider.searchTrack(query, limit = 5)
-            } catch (e: Exception) {
-                Log.w(TAG, "Provider lookup failed for '$query': ${e.message}")
-                if (e.message?.contains("rate limit", ignoreCase = true) == true) {
-                    // Stop hammering Apple for a while — every subsequent track in this run
-                    // would otherwise fail the same way and end up with no artwork.
-                    enterBackoff()
+                val searchResults = try {
+                    metadataProvider.searchTrack(query, limit = 5, country = country)
+                } catch (e: Exception) {
+                    Log.w(TAG, "Provider lookup failed for '$query' in $country: ${e.message}")
+                    if (e.message?.contains("rate limit", ignoreCase = true) == true) {
+                        // Stop hammering Apple for a while — every subsequent track in this run
+                        // would otherwise fail the same way and end up with no artwork.
+                        enterBackoff()
+                    }
+                    val errorTrack = currentTrack.copy(
+                        metadataStatus = MetadataStatus.NEEDS_LOOKUP,
+                        metadataLastUpdated = System.currentTimeMillis()
+                    )
+                    trackDao.update(errorTrack)
+                    return errorTrack
                 }
-                val errorTrack = currentTrack.copy(
-                    metadataStatus = MetadataStatus.NEEDS_LOOKUP,
-                    metadataLastUpdated = System.currentTimeMillis()
-                )
-                trackDao.update(errorTrack)
-                return errorTrack
-            }
 
-            Log.i("DIAG_METADATA", "[Point 17] iTunes result count for attempt ${attempt + 1}: ${searchResults.size}")
-            if (searchResults.isEmpty()) continue
-            sawAnyResult = true
+                Log.i("DIAG_METADATA", "[Point 17] iTunes result count for attempt $attemptCount (country=$country): ${searchResults.size}")
+                if (searchResults.isEmpty()) continue
+                sawAnyResult = true
 
-            val (candidate, candidateConfidence) = findBestMatch(currentTrack, searchResults)
-            if (candidate != null && candidateConfidence != MetadataConfidence.LOW) {
-                bestMatch = candidate
-                confidence = candidateConfidence
-                break
-            }
-            if (candidate != null && bestMatch == null) {
-                bestMatch = candidate
-                confidence = candidateConfidence
+                val (candidate, candidateConfidence) = findBestMatch(currentTrack, searchResults)
+                if (candidate != null && candidateConfidence == MetadataConfidence.HIGH) {
+                    bestMatch = candidate
+                    confidence = candidateConfidence
+                    break@searchLoop
+                }
+                if (candidate != null && bestMatch == null) {
+                    bestMatch = candidate
+                    confidence = candidateConfidence
+                }
             }
         }
 
@@ -318,6 +331,39 @@ class MetadataEnrichmentService @Inject constructor(
         updateAlbumAndArtistEntities(enriched)
 
         return enriched
+    }
+
+    /**
+     * Determines the optimal storefront country code for iTunes lookup based on
+     * language classification or device locale, defaulting to "IN" for regional Indian music.
+     */
+    fun determineCountryForTrack(track: Track): String {
+        val lang = track.language.lowercase(Locale.ROOT)
+        if (lang in setOf("telugu", "tamil", "hindi")) {
+            return "IN"
+        }
+        val systemKey = LanguageClassifier.languageToSystemKey(track.language)
+        if (systemKey in setOf(LanguageClassifier.SystemKey.TELUGU, LanguageClassifier.SystemKey.TAMIL, LanguageClassifier.SystemKey.HINDI)) {
+            return "IN"
+        }
+
+        val classifiedLang = LanguageClassifier.classify(
+            title = track.title,
+            artist = track.artist,
+            album = track.albumTitle,
+            path = track.path ?: track.uri,
+            genre = track.genre
+        )
+        if (classifiedLang in setOf(LanguageClassifier.TELUGU, LanguageClassifier.TAMIL, LanguageClassifier.HINDI)) {
+            return "IN"
+        }
+
+        val deviceCountry = try {
+            Locale.getDefault().country?.takeIf { it.isNotBlank() }?.uppercase(Locale.ROOT)
+        } catch (e: Throwable) {
+            null
+        }
+        return deviceCountry ?: "IN"
     }
 
     /**
