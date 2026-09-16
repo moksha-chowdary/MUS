@@ -296,14 +296,14 @@ class MetadataEnrichmentService @Inject constructor(
         Log.i("DIAG_METADATA", "[Point 19] Calculated confidence: $confidence")
 
         if (bestMatch == null || confidence == MetadataConfidence.LOW) {
-            Log.d(TAG, "Match confidence is LOW. Retaining existing metadata and marking NEEDS_REVIEW.")
-            val reviewTrack = currentTrack.copy(
-                metadataStatus = MetadataStatus.NEEDS_REVIEW,
+            Log.d(TAG, "Match confidence is LOW. Retaining existing metadata and marking FAILED.")
+            val failedTrack = currentTrack.copy(
+                metadataStatus = MetadataStatus.FAILED,
                 metadataConfidence = MetadataConfidence.LOW,
                 metadataLastUpdated = System.currentTimeMillis()
             )
-            trackDao.update(reviewTrack)
-            return reviewTrack
+            trackDao.update(failedTrack)
+            return failedTrack
         }
 
         // Step 5: Merge metadata (strictly preserving genuine embedded fields)
@@ -457,42 +457,29 @@ class MetadataEnrichmentService @Inject constructor(
     }
 
     /**
-     * Merges remote metadata into the local Track while strictly preserving valid embedded fields.
+     * Applies confident remote metadata to the local Track via direct overwrite.
+     * Overwrites song title, artist, album name, track number, year, genre directly.
+     * Preserves valid embedded artwork if present, otherwise downloads remote cover art.
      */
     suspend fun mergeMetadata(
         local: Track,
         remote: RemoteTrackMetadata,
         confidence: String
     ): Track {
-        // Evaluate genuine embedded title:
-        // If title contains " - " or "[", it came from filename fallback, NOT genuine embedded ID3 tag.
-        val hasGenuineEmbeddedTitle = local.metadataSource == MetadataSource.EMBEDDED &&
-                !MetadataUtils.isPlaceholderTitle(local.title) &&
-                !local.title.contains(" - ")
+        val finalTitle = remote.title
+        val finalArtist = remote.artist
+        val finalAlbumTitle = remote.albumTitle ?: local.albumTitle
+        val finalAlbumArtist = remote.albumArtist ?: finalArtist
+        val finalTrackNumber = if (remote.trackNumber > 0) remote.trackNumber else local.trackNumber
+        val finalDiscNumber = if (remote.discNumber > 1) remote.discNumber else local.discNumber
+        val finalYear = if (remote.year > 0) remote.year else local.year
+        val finalGenre = if (!remote.genre.isNullOrBlank()) remote.genre else local.genre
+        val finalComposer = if (!remote.composer.isNullOrBlank()) remote.composer else local.composer
 
-        val hasGenuineEmbeddedArtist = local.metadataSource == MetadataSource.EMBEDDED &&
-                !MetadataUtils.isPlaceholderArtist(local.artist)
-
-        val hasGenuineEmbeddedAlbum = local.metadataSource == MetadataSource.EMBEDDED &&
-                !MetadataUtils.isPlaceholderAlbum(local.albumTitle)
-
-        val hasGenuineEmbeddedAlbumArtist = local.metadataSource == MetadataSource.EMBEDDED &&
-                !MetadataUtils.isPlaceholderArtist(local.albumArtist)
-
-        val finalTitle = if (hasGenuineEmbeddedTitle) local.title else remote.title
-        val finalArtist = if (hasGenuineEmbeddedArtist) local.artist else remote.artist
-        val finalAlbumTitle = if (hasGenuineEmbeddedAlbum) local.albumTitle else (remote.albumTitle ?: local.albumTitle)
-        val finalAlbumArtist = if (hasGenuineEmbeddedAlbumArtist) local.albumArtist else (remote.albumArtist ?: finalArtist)
-        val finalTrackNumber = if (local.trackNumber > 0) local.trackNumber else remote.trackNumber
-        val finalDiscNumber = if (local.discNumber > 1) local.discNumber else remote.discNumber
-        val finalYear = if (local.year > 0) local.year else remote.year
-        val finalGenre = if (!local.genre.isNullOrBlank()) local.genre else remote.genre
-        val finalComposer = if (!local.composer.isNullOrBlank()) local.composer else remote.composer
-
-        // Recalculate canonical album ID based on the resolved Album Artist + Album Title
+        // Canonical album ID based on the resolved Album Artist + Album Title
         val newAlbumId = MetadataUtils.generateAlbumId(finalAlbumArtist, finalAlbumTitle)
 
-        // Artwork resolution: Embedded -> Local Cache for newAlbumId -> Local Cache for local.albumId -> Remote Provider -> Fallback
+        // Artwork resolution: preserve valid embedded artwork if exists, otherwise download/reuse remote
         var finalArtworkUri = local.artworkUri
         var artworkSavedPath: String? = null
         if (!hasValidArtwork(local)) {
@@ -512,32 +499,10 @@ class MetadataEnrichmentService @Inject constructor(
             artworkSavedPath = local.artworkUri
         }
 
-        Log.i("DIAG_METADATA", "[Point 20] Final merged: title='$finalTitle', artist='$finalArtist', album='$finalAlbumTitle', year=$finalYear, genre=$finalGenre")
+        Log.i("DIAG_METADATA", "[Point 20] Final direct overwrite: title='$finalTitle', artist='$finalArtist', album='$finalAlbumTitle', year=$finalYear, genre=$finalGenre")
         Log.i("DIAG_METADATA", "[Point 21] Artwork URL selected: ${remote.artworkUrl}")
         Log.i("DIAG_METADATA", "[Point 22] Artwork file path saved: $artworkSavedPath")
         Log.i("DIAG_METADATA", "[Point 23] Artwork URI written to Room: $finalArtworkUri")
-
-        // Determine metadata source per Requirement 2
-        val hadAnyEmbedded = hasGenuineEmbeddedTitle || hasGenuineEmbeddedArtist || hasGenuineEmbeddedAlbum || hasValidArtwork(local)
-        val externalFilledSomething = (!hasGenuineEmbeddedTitle && remote.title.isNotBlank()) ||
-                (!hasGenuineEmbeddedArtist && remote.artist.isNotBlank()) ||
-                (!hasGenuineEmbeddedAlbum && !remote.albumTitle.isNullOrBlank()) ||
-                (local.artworkUri == null && finalArtworkUri != null)
-
-        val metadataSource = when {
-            hadAnyEmbedded && externalFilledSomething -> MetadataSource.MERGED
-            externalFilledSomething -> MetadataSource.EXTERNAL
-            else -> MetadataSource.EMBEDDED
-        }
-
-        // Determine metadata status per Requirement 3 (all must be valid)
-        val isNowComplete = !MetadataUtils.isPlaceholderTitle(finalTitle) &&
-                !MetadataUtils.isPlaceholderArtist(finalArtist) &&
-                !MetadataUtils.isPlaceholderAlbum(finalAlbumTitle) &&
-                !MetadataUtils.isPlaceholderArtist(finalAlbumArtist) &&
-                finalArtworkUri != null
-
-        val metadataStatus = if (isNowComplete) MetadataStatus.COMPLETE else MetadataStatus.PARTIAL
 
         return local.copy(
             title = finalTitle,
@@ -551,9 +516,9 @@ class MetadataEnrichmentService @Inject constructor(
             genre = finalGenre,
             composer = finalComposer,
             artworkUri = finalArtworkUri,
-            metadataSource = metadataSource,
-            metadataStatus = metadataStatus,
-            metadataConfidence = confidence,
+            metadataSource = MetadataSource.EXTERNAL,
+            metadataStatus = MetadataStatus.COMPLETE,
+            metadataConfidence = MetadataConfidence.HIGH,
             metadataLastUpdated = System.currentTimeMillis()
         )
     }

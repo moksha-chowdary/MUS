@@ -127,7 +127,7 @@ class MetadataEnrichmentTest {
         assertEquals("After Hours", enriched.albumTitle)
         assertEquals(2020, enriched.year)
         assertEquals("R&B/Soul", enriched.genre)
-        assertEquals(MetadataSource.MERGED, enriched.metadataSource)
+        assertEquals(MetadataSource.EXTERNAL, enriched.metadataSource)
         assertEquals(MetadataStatus.COMPLETE, enriched.metadataStatus)
     }
 
@@ -162,9 +162,9 @@ class MetadataEnrichmentTest {
         assertEquals(MetadataConfidence.HIGH, confidence)
     }
 
-    // 4. Embedded metadata takes priority
+    // 4. Confident match performs direct overwrite (Simplified Model - Priority 2)
     @Test
-    fun testEmbeddedMetadataTakesPriorityOverExternal() = runBlocking {
+    fun testConfidentMatchPerformsDirectOverwrite() = runBlocking {
         val localTrack = Track(
             id = 104L,
             title = "Blinding Lights (Acoustic)",
@@ -183,11 +183,12 @@ class MetadataEnrichmentTest {
         )
 
         val merged = enrichmentService.mergeMetadata(localTrack, remoteCandidate, MetadataConfidence.HIGH)
-        // Embedded valid title and artist must be preserved!
-        assertEquals("Blinding Lights (Acoustic)", merged.title)
-        assertEquals("The Weeknd", merged.artist)
-        // Missing albumTitle is filled
+        // Confident match directly overwrites title, artist, album
+        assertEquals("Blinding Lights (Standard Version)", merged.title)
+        assertEquals("The Weeknd ft. Someone Else", merged.artist)
         assertEquals("After Hours Deluxe", merged.albumTitle)
+        assertEquals(MetadataStatus.COMPLETE, merged.metadataStatus)
+        assertEquals(MetadataConfidence.HIGH, merged.metadataConfidence)
     }
 
     // 5. External metadata fills missing fields
@@ -223,6 +224,40 @@ class MetadataEnrichmentTest {
         assertEquals(2020, merged.year)
         assertEquals("Electronic", merged.genre)
         assertEquals("After Hours", merged.albumTitle)
+    }
+
+    // 5b. Non-confident match leaves existing track data untouched (Simplified Model - Priority 2)
+    @Test
+    fun testNonConfidentMatchLeavesTrackDataUntouched() = runBlocking {
+        val originalTrack = Track(
+            id = 109L,
+            title = "My Rare Indie Track",
+            artist = "Local Artist",
+            albumId = 209L,
+            albumTitle = "Local Album",
+            duration = 180000L,
+            uri = "/Muzic/indie.mp3",
+            path = "/Muzic/indie.mp3",
+        )
+        fakeTrackDao.insert(originalTrack)
+
+        fakeProvider.mockResults = listOf(
+            RemoteTrackMetadata(
+                title = "Popular Dance Hit",
+                artist = "Famous Pop Star",
+                albumTitle = "Greatest Hits",
+                durationMs = 300000L,
+                artworkUrl = "https://example.com/pop.jpg",
+            )
+        )
+
+        val result = enrichmentService.enrichTrack(originalTrack, forceRefresh = true)
+        // Must leave local text and artwork data completely alone!
+        assertEquals("My Rare Indie Track", result.title)
+        assertEquals("Local Artist", result.artist)
+        assertEquals("Local Album", result.albumTitle)
+        assertNull(result.artworkUri)
+        assertEquals(MetadataStatus.FAILED, result.metadataStatus)
     }
 
     // 6. Low-confidence external match is rejected/flagged
