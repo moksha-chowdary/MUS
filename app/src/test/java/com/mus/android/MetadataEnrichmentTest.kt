@@ -394,6 +394,95 @@ class MetadataEnrichmentTest {
         assertEquals(uri1, uri2)
     }
 
+    // 8b. Priority 3: Untagged tracks in the same directory share the same stable canonical album ID
+    @Test
+    fun testCanonicalAlbumIdStableForUntaggedTracks() {
+        val path1 = "/storage/emulated/0/Muzic/Telugu Hits/01 - Song.mp3"
+        val path2 = "/storage/emulated/0/Muzic/Telugu Hits/02 - Another Song.mp3"
+        val pathOther = "/storage/emulated/0/Muzic/Hindi Pop/01 - Hindi Song.mp3"
+
+        val albumId1 = MetadataUtils.generateCanonicalAlbumId(null, null, path1)
+        val albumId2 = MetadataUtils.generateCanonicalAlbumId(null, null, path2)
+        val albumIdOther = MetadataUtils.generateCanonicalAlbumId(null, null, pathOther)
+
+        assertTrue(albumId1 > 0)
+        assertEquals("Tracks in the same folder must share canonical album ID", albumId1, albumId2)
+        assertNotEquals("Tracks in different folders must have different album IDs", albumId1, albumIdOther)
+
+        // Rescan stability: same path produces identical canonical ID
+        val rescanId = MetadataUtils.generateCanonicalAlbumId(null, null, path1)
+        assertEquals(albumId1, rescanId)
+    }
+
+    // 8c. Priority 3: Valid embedded artwork is always preferred over remote artwork
+    @Test
+    fun testEmbeddedArtworkPreferredOverRemote() = runBlocking {
+        val albumId = 333L
+        val embeddedUri = artworkStorage.saveEmbeddedArtwork(albumId, "GENUINE_EMBEDDED_BYTES".toByteArray())
+        assertNotNull(embeddedUri)
+
+        val localTrack = Track(
+            id = 301L,
+            title = "Blinding Lights",
+            artist = "The Weeknd",
+            albumId = albumId,
+            albumTitle = "After Hours",
+            duration = 200000L,
+            uri = "/Muzic/01.mp3",
+            artworkUri = embeddedUri,
+        )
+
+        val remoteCandidate = RemoteTrackMetadata(
+            title = "Blinding Lights",
+            artist = "The Weeknd",
+            albumTitle = "After Hours",
+            durationMs = 200000L,
+            artworkUrl = "https://example.com/remote_cover.jpg",
+        )
+
+        val enriched = enrichmentService.mergeMetadata(localTrack, remoteCandidate, MetadataConfidence.HIGH)
+        // Must preserve the embedded artwork, never replace with remote!
+        assertEquals("Embedded artwork must be preserved", embeddedUri, enriched.artworkUri)
+    }
+
+    // 8d. Priority 3 & 4: Artist entity artwork is never polluted by album cover
+    @Test
+    fun testArtistArtworkNotPollutedByAlbumCover() = runBlocking {
+        val albumId = 444L
+        val albumArtUri = artworkStorage.saveEmbeddedArtwork(albumId, "ALBUM_ART_BYTES".toByteArray())
+
+        val track = Track(
+            id = 401L,
+            title = "Starboy",
+            artist = "The Weeknd",
+            albumArtist = "The Weeknd",
+            albumId = albumId,
+            albumTitle = "Starboy",
+            duration = 230000L,
+            uri = "/Muzic/starboy.mp3",
+            artworkUri = albumArtUri,
+            metadataStatus = MetadataStatus.COMPLETE,
+            metadataConfidence = MetadataConfidence.HIGH,
+        )
+
+        fakeTrackDao.insert(track)
+        fakeProvider.mockResults = listOf(
+            RemoteTrackMetadata(
+                title = "Starboy",
+                artist = "The Weeknd",
+                albumTitle = "Starboy",
+                durationMs = 230000L,
+                artworkUrl = "https://example.com/starboy.jpg",
+            )
+        )
+        enrichmentService.enrichTrack(track, forceRefresh = true)
+
+        val artistId = MetadataUtils.generateArtistId("The Weeknd")
+        val artist = fakeArtistDao.getArtistById(artistId)
+        assertNotNull(artist)
+        assertNull("Artist artwork must NOT be set to album cover", artist!!.artworkUri)
+    }
+
     // 9. Metadata survives database representation
     @Test
     fun testMetadataSurvivesDatabaseFields() {

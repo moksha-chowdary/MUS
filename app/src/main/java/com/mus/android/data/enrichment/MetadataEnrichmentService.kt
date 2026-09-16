@@ -482,7 +482,16 @@ class MetadataEnrichmentService @Inject constructor(
         // Artwork resolution: preserve valid embedded artwork if exists, otherwise download/reuse remote
         var finalArtworkUri = local.artworkUri
         var artworkSavedPath: String? = null
-        if (!hasValidArtwork(local)) {
+        val hasEmbedded = artworkStorage.isEmbeddedArtwork(local.artworkUri) ||
+                artworkStorage.hasEmbeddedArtwork(newAlbumId) ||
+                artworkStorage.hasEmbeddedArtwork(local.albumId)
+
+        if (hasEmbedded) {
+            finalArtworkUri = artworkStorage.getLocalArtworkUri(newAlbumId)
+                ?: artworkStorage.getLocalArtworkUri(local.albumId)
+                ?: local.artworkUri
+            artworkSavedPath = finalArtworkUri
+        } else if (!hasValidArtwork(local)) {
             val cachedArt = artworkStorage.getLocalArtworkUri(newAlbumId)
                 ?: artworkStorage.getLocalArtworkUri(local.albumId)
             if (cachedArt != null) {
@@ -532,7 +541,7 @@ class MetadataEnrichmentService @Inject constructor(
                     existingAlbum.copy(
                         title = enriched.albumTitle,
                         artist = enriched.albumArtist,
-                        artworkUri = existingAlbum.artworkUri ?: enriched.artworkUri,
+                        artworkUri = enriched.artworkUri ?: existingAlbum.artworkUri,
                         year = if (existingAlbum.year == 0 && enriched.year > 0) enriched.year else existingAlbum.year
                     )
                 ))
@@ -551,20 +560,19 @@ class MetadataEnrichmentService @Inject constructor(
             }
 
             // Upsert Artist (both track artist and album artist)
+            // Never assign an album cover to artist artwork — leave it null unless genuine artist art exists
             val artistNames = setOf(enriched.artist, enriched.albumArtist).filter { !MetadataUtils.isPlaceholderArtist(it) }
             for (artistName in artistNames) {
                 val artistId = MetadataUtils.generateArtistId(artistName)
                 val existingArtist = artistDao.getArtistById(artistId)
                 if (existingArtist != null) {
-                    if (existingArtist.artworkUri.isNullOrBlank() && !enriched.artworkUri.isNullOrBlank()) {
-                        artistDao.insertAll(listOf(existingArtist.copy(artworkUri = enriched.artworkUri)))
-                    }
+                    // Retain existing artist entity as-is without assigning album cover
                 } else {
                     artistDao.insertAll(listOf(
                         Artist(
                             id = artistId,
                             name = artistName,
-                            artworkUri = enriched.artworkUri,
+                            artworkUri = null, // Don't use album cover as artist artwork
                             albumCount = 1,
                             trackCount = 1
                         )

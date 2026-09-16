@@ -60,20 +60,44 @@ class ArtworkStorage @Inject constructor(
 
     /**
      * Returns the file Uri for the cached album artwork if it exists and is valid.
+     * Always prefers valid embedded artwork over remote artwork.
      * Never serves artwork for the global unknown album.
      */
     fun getLocalArtworkUri(albumId: Long): String? {
         if (albumId == UNKNOWN_ALBUM_ID || albumId <= 0L) return null
+        // 1. Embedded artwork takes absolute priority
+        val embeddedFile = File(artworkDir, "art_embedded_album_$albumId.jpg")
+        if (embeddedFile.exists() && embeddedFile.length() > 0L) {
+            return fileToUriString(embeddedFile)
+        }
+        // 2. Cached remote artwork
         val keyFile = File(artworkDir, "art_album_$albumId.jpg")
         if (keyFile.exists() && keyFile.length() > 0L) {
             return fileToUriString(keyFile)
         }
+        // 3. Legacy file
         val legacyFile = File(artworkDir, "art_$albumId.jpg")
-        return if (legacyFile.exists() && legacyFile.length() > 0L) {
-            fileToUriString(legacyFile)
-        } else {
-            null
+        if (legacyFile.exists() && legacyFile.length() > 0L) {
+            return fileToUriString(legacyFile)
         }
+        return null
+    }
+
+    /**
+     * Checks whether valid embedded artwork exists in storage for this album.
+     */
+    fun hasEmbeddedArtwork(albumId: Long): Boolean {
+        if (albumId == UNKNOWN_ALBUM_ID || albumId <= 0L) return false
+        val embeddedFile = File(artworkDir, "art_embedded_album_$albumId.jpg")
+        return embeddedFile.exists() && embeddedFile.length() > 0L
+    }
+
+    /**
+     * Checks whether a given artwork URI points to an embedded artwork file.
+     */
+    fun isEmbeddedArtwork(artworkUri: String?): Boolean {
+        if (artworkUri.isNullOrBlank()) return false
+        return artworkUri.contains("art_embedded_album_")
     }
 
     /**
@@ -103,20 +127,25 @@ class ArtworkStorage @Inject constructor(
     }
 
     /**
-     * Saves raw artwork bytes for album ID.
+     * Saves raw artwork bytes for album ID with embedded priority prefix.
      */
     fun saveEmbeddedArtwork(albumId: Long, bytes: ByteArray): String? {
         if (albumId == UNKNOWN_ALBUM_ID || albumId <= 0L) return null
-        return saveEmbeddedArtworkByKey("album_$albumId", bytes)
+        return saveEmbeddedArtworkByKey("embedded_album_$albumId", bytes)
     }
 
     /**
      * Downloads artwork from a remote URL and persists it with a specific key.
+     * Supports forceOverwrite to replace wrong cached images.
      */
-    suspend fun downloadAndStoreArtworkByKey(artworkKey: String, imageUrl: String): String? = withContext(Dispatchers.IO) {
+    suspend fun downloadAndStoreArtworkByKey(
+        artworkKey: String,
+        imageUrl: String,
+        forceOverwrite: Boolean = false,
+    ): String? = withContext(Dispatchers.IO) {
         if (isUnknownKey(artworkKey)) return@withContext null
         val targetFile = File(artworkDir, "art_$artworkKey.jpg")
-        if (targetFile.exists() && targetFile.length() > 0L) {
+        if (!forceOverwrite && targetFile.exists() && targetFile.length() > 0L) {
             return@withContext fileToUriString(targetFile)
         }
 
@@ -163,9 +192,41 @@ class ArtworkStorage @Inject constructor(
     /**
      * Downloads artwork from a remote URL and persists it for an album ID.
      */
-    suspend fun downloadAndStoreArtwork(albumId: Long, imageUrl: String): String? = withContext(Dispatchers.IO) {
+    suspend fun downloadAndStoreArtwork(
+        albumId: Long,
+        imageUrl: String,
+        forceOverwrite: Boolean = false,
+    ): String? = withContext(Dispatchers.IO) {
         if (albumId == UNKNOWN_ALBUM_ID || albumId <= 0L) return@withContext null
-        downloadAndStoreArtworkByKey("album_$albumId", imageUrl)
+        downloadAndStoreArtworkByKey("album_$albumId", imageUrl, forceOverwrite)
+    }
+
+    /**
+     * Clears all cached artwork files for an album ID.
+     */
+    fun clearArtwork(albumId: Long): Boolean {
+        if (albumId == UNKNOWN_ALBUM_ID || albumId <= 0L) return false
+        var deleted = false
+        val remoteFile = File(artworkDir, "art_album_$albumId.jpg")
+        if (remoteFile.exists()) deleted = remoteFile.delete() || deleted
+        val legacyFile = File(artworkDir, "art_$albumId.jpg")
+        if (legacyFile.exists()) deleted = legacyFile.delete() || deleted
+        val embeddedFile = File(artworkDir, "art_embedded_album_$albumId.jpg")
+        if (embeddedFile.exists()) deleted = embeddedFile.delete() || deleted
+        return deleted
+    }
+
+    /**
+     * Clears only remote cached artwork for an album ID, keeping genuine embedded artwork safe.
+     */
+    fun clearRemoteArtwork(albumId: Long): Boolean {
+        if (albumId == UNKNOWN_ALBUM_ID || albumId <= 0L) return false
+        var deleted = false
+        val remoteFile = File(artworkDir, "art_album_$albumId.jpg")
+        if (remoteFile.exists()) deleted = remoteFile.delete() || deleted
+        val legacyFile = File(artworkDir, "art_$albumId.jpg")
+        if (legacyFile.exists()) deleted = legacyFile.delete() || deleted
+        return deleted
     }
 
     private fun fileToUriString(file: File): String {

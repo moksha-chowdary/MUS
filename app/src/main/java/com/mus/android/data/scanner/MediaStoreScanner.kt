@@ -28,7 +28,8 @@ import javax.inject.Singleton
  */
 @Singleton
 class MediaStoreScanner @Inject constructor(
-    @ApplicationContext private val context: Context
+    @ApplicationContext private val context: Context,
+    private val artworkStorage: com.mus.android.data.enrichment.artwork.ArtworkStorage,
 ) {
     data class ScanResult(
         val tracks: List<Track>,
@@ -146,11 +147,7 @@ class MediaStoreScanner @Inject constructor(
                     // Construct a synthetic absolute path for stable ID generation
                     val syntheticPath = "/Muzic/$fullRelativePath"
                     val trackId = MetadataUtils.generateStableTrackId(syntheticPath) ?: MetadataUtils.generateTrackId(documentUri.toString())
-                    val albumId = if (!MetadataUtils.isPlaceholderAlbum(parsedMeta.albumTitle) && !MetadataUtils.isPlaceholderArtist(parsedMeta.albumArtist)) {
-                        MetadataUtils.generateAlbumId(parsedMeta.albumArtist, parsedMeta.albumTitle)
-                    } else {
-                        trackId
-                    }
+                    val albumId = MetadataUtils.generateCanonicalAlbumId(parsedMeta.albumArtist, parsedMeta.albumTitle, syntheticPath)
                     val effectiveMime = if (parsedMeta.mimeType.isNotBlank()) parsedMeta.mimeType else mimeType
                     val codec = mimeTypeToCodec(effectiveMime, displayName)
                     val language = com.mus.android.data.classifier.LanguageClassifier.classify(
@@ -252,11 +249,7 @@ class MediaStoreScanner @Inject constructor(
                 val parsedMeta = extractMetadataFromRetriever(retriever, file.name, file.absolutePath)
 
                 val trackId = MetadataUtils.generateStableTrackId(file.absolutePath) ?: MetadataUtils.generateTrackId(file.absolutePath)
-                val albumId = if (!MetadataUtils.isPlaceholderAlbum(parsedMeta.albumTitle) && !MetadataUtils.isPlaceholderArtist(parsedMeta.albumArtist)) {
-                    MetadataUtils.generateAlbumId(parsedMeta.albumArtist, parsedMeta.albumTitle)
-                } else {
-                    trackId
-                }
+                val albumId = MetadataUtils.generateCanonicalAlbumId(parsedMeta.albumArtist, parsedMeta.albumTitle, file.absolutePath)
                 val codec = mimeTypeToCodec(parsedMeta.mimeType, file.absolutePath)
                 val language = com.mus.android.data.classifier.LanguageClassifier.classify(
                     title = parsedMeta.title,
@@ -408,6 +401,7 @@ class MediaStoreScanner @Inject constructor(
                 val effectiveRawTitle = if (!MetadataUtils.isPlaceholderTitle(rawTitle)) rawTitle else null
 
                 val retriever = MediaMetadataRetriever()
+                var embeddedPic: ByteArray? = null
                 try {
                     context.contentResolver.openFileDescriptor(contentUri, "r")?.use { pfd ->
                         retriever.setDataSource(pfd.fileDescriptor)
@@ -416,24 +410,7 @@ class MediaStoreScanner @Inject constructor(
                         discNumber = discStr?.substringBefore("/")?.trim()?.toIntOrNull() ?: 1
                         genre = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_GENRE)?.trim()
                         composer = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_COMPOSER)?.trim()
-
-                        val pic = retriever.embeddedPicture
-                        if (pic != null) {
-                            val artKey = MetadataUtils.generateArtworkKey(rawAlbumArtist ?: effectiveRawArtist ?: "", effectiveRawAlbum ?: "", contentUri.toString())
-                            val artDir = File(context.filesDir, "artwork")
-                            if (!artDir.exists()) artDir.mkdirs()
-                            val artFile = File(artDir, "art_$artKey.jpg")
-                            if (!artFile.exists() || artFile.length() == 0L) {
-                                try {
-                                    FileOutputStream(artFile).use { it.write(pic) }
-                                } catch (e: Exception) {
-                                    Log.w(TAG, "Failed writing cached artwork for key $artKey", e)
-                                }
-                            }
-                            if (artFile.exists() && artFile.length() > 0L) {
-                                artworkUri = Uri.fromFile(artFile).toString()
-                            }
-                        }
+                        embeddedPic = retriever.embeddedPicture
                     }
                 } catch (e: Exception) {
                     // Ignore retriever failures on MediaStore query
@@ -449,10 +426,14 @@ class MediaStoreScanner @Inject constructor(
                     fileNameFallback = fileNameFallback
                 )
 
-                val canonicalAlbumId = if (!MetadataUtils.isPlaceholderAlbum(resolved.album) && !MetadataUtils.isPlaceholderArtist(resolved.albumArtist)) {
-                    MetadataUtils.generateAlbumId(resolved.albumArtist, resolved.album)
-                } else {
-                    mediaStoreId
+                val canonicalAlbumId = MetadataUtils.generateCanonicalAlbumId(
+                    resolved.albumArtist,
+                    resolved.album,
+                    filePath ?: contentUri.toString()
+                )
+
+                if (embeddedPic != null) {
+                    artworkUri = artworkStorage.saveEmbeddedArtwork(canonicalAlbumId, embeddedPic!!)
                 }
                 val codec = mimeTypeToCodec(mimeType, filePath)
                 val language = com.mus.android.data.classifier.LanguageClassifier.classify(
@@ -535,24 +516,17 @@ class MediaStoreScanner @Inject constructor(
         val discNumber = discNumStr?.substringBefore("/")?.trim()?.toIntOrNull() ?: 1
         val year = yearStr?.let { Regex("""\b(19\d\d|20\d\d)\b""").find(it)?.value?.toIntOrNull() } ?: 0
 
-        // Extract embedded artwork using collision-free key
+        // Extract embedded artwork using canonical album ID
+        val canonicalAlbumId = MetadataUtils.generateCanonicalAlbumId(
+            resolved.albumArtist,
+            resolved.album,
+            pathOrUri
+        )
+
         var artworkUri: String? = null
         val picture = retriever.embeddedPicture
         if (picture != null) {
-            val artKey = MetadataUtils.generateArtworkKey(resolved.albumArtist, resolved.album, pathOrUri)
-            val artDir = File(context.filesDir, "artwork")
-            if (!artDir.exists()) artDir.mkdirs()
-            val artFile = File(artDir, "art_$artKey.jpg")
-            if (!artFile.exists() || artFile.length() == 0L) {
-                try {
-                    FileOutputStream(artFile).use { it.write(picture) }
-                } catch (e: Exception) {
-                    Log.w(TAG, "Failed writing cached artwork for key $artKey", e)
-                }
-            }
-            if (artFile.exists() && artFile.length() > 0L) {
-                artworkUri = Uri.fromFile(artFile).toString()
-            }
+            artworkUri = artworkStorage.saveEmbeddedArtwork(canonicalAlbumId, picture)
         }
 
         // Diagnostic trace logging for points 1-13
@@ -643,7 +617,7 @@ class MediaStoreScanner @Inject constructor(
                 artistsMap[albumArtistKey] = Artist(
                     id = MetadataUtils.generateArtistId(track.albumArtist),
                     name = track.albumArtist,
-                    artworkUri = track.artworkUri,
+                    artworkUri = null, // Don't use album cover as artist artwork
                     albumCount = 0,
                     trackCount = 0,
                 )
@@ -655,7 +629,7 @@ class MediaStoreScanner @Inject constructor(
                 artistsMap[trackArtistKey] = Artist(
                     id = MetadataUtils.generateArtistId(track.artist),
                     name = track.artist,
-                    artworkUri = track.artworkUri,
+                    artworkUri = null, // Don't use album cover as artist artwork
                     albumCount = 0,
                     trackCount = 0,
                 )
@@ -668,9 +642,7 @@ class MediaStoreScanner @Inject constructor(
             val trackCount = tracks.count {
                 it.artist.equals(artist.name, ignoreCase = true) || it.albumArtist.equals(artist.name, ignoreCase = true)
             }
-            val artworkUri = artist.artworkUri
-                ?: albumsMap.values.firstOrNull { it.artist.equals(artist.name, ignoreCase = true) }?.artworkUri
-                ?: tracks.firstOrNull { it.artist.equals(artist.name, ignoreCase = true) || it.albumArtist.equals(artist.name, ignoreCase = true) }?.artworkUri
+            val artworkUri = artist.artworkUri // Never fall back to album cover
 
             artist.copy(
                 albumCount = albumCount,

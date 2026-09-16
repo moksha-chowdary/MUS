@@ -25,6 +25,34 @@ object MetadataUtils {
     }
 
     /**
+     * Canonical album ID:
+     * - If album and album artist are valid (not placeholders): generateAlbumId(albumArtist, albumTitle)
+     * - If untagged/placeholder: derived deterministically from the containing directory or stable relative path,
+     *   ensuring untagged tracks in the same directory share a stable album ID across repeated rescans.
+     */
+    fun generateCanonicalAlbumId(
+        albumArtist: String?,
+        albumTitle: String?,
+        pathOrUri: String?,
+    ): Long {
+        if (!isPlaceholderAlbum(albumTitle) && !isPlaceholderArtist(albumArtist)) {
+            return generateAlbumId(albumArtist!!, albumTitle!!)
+        }
+
+        val relPath = pathOrUri?.let { extractMuzicRelativePath(it) }
+        val folderKey = when {
+            relPath != null && relPath.contains('/') -> relPath.substringBeforeLast('/')
+            !pathOrUri.isNullOrBlank() -> {
+                val cleanPath = pathOrUri.replace('\\', '/')
+                if (cleanPath.contains('/')) cleanPath.substringBeforeLast('/').substringAfterLast('/')
+                else cleanPath
+            }
+            else -> "unknown_folder"
+        }
+        return generateDeterministicId("album_folder:${normalizeString(folderKey)}")
+    }
+
+    /**
      * Canonical artist ID based on normalized artist name.
      */
     fun generateArtistId(artistName: String): Long {
