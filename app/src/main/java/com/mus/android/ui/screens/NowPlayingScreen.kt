@@ -70,16 +70,25 @@ fun NowPlayingScreen(
         pageCount = { if (queue.isNotEmpty()) queue.size else 1 }
     )
 
-    // Sync pager when track changes from playback/buttons (guarded against active user dragging)
+    // Guard flag: true while we are programmatically scrolling the pager in response to
+    // a Media3 track change. This prevents the settledPage LaunchedEffect from calling
+    // playQueueItem() for our own animations, which would create a feedback loop:
+    //   Media3 advance → pager animate → settledPage fires → seekTo → Media3 advance again
+    var programmaticScroll by remember { mutableStateOf(false) }
+
+    // Sync pager when track changes from Media3 playback / skip buttons
     LaunchedEffect(currentIndex, queue.size) {
         if (!pagerState.isScrollInProgress && queue.isNotEmpty() && currentIndex in queue.indices && pagerState.currentPage != currentIndex) {
+            programmaticScroll = true
             pagerState.animateScrollToPage(currentIndex)
+            programmaticScroll = false
         }
     }
 
-    // When user swipes to another page, commit track change to single source of truth
+    // When USER swipes to another page, commit track change to Media3.
+    // Skipped when the scroll was triggered programmatically by the effect above.
     LaunchedEffect(pagerState.settledPage) {
-        if (queue.isNotEmpty() && pagerState.settledPage in queue.indices && pagerState.settledPage != currentIndex) {
+        if (!programmaticScroll && queue.isNotEmpty() && pagerState.settledPage in queue.indices && pagerState.settledPage != currentIndex) {
             viewModel.playQueueItem(pagerState.settledPage)
         }
     }
