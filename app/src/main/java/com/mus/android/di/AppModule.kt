@@ -25,7 +25,7 @@ object AppModule {
             MusDatabase::class.java,
             "mus_database"
         )
-            .addMigrations(MusDatabase.MIGRATION_3_4, MusDatabase.MIGRATION_4_5)
+            .addMigrations(MusDatabase.MIGRATION_3_4, MusDatabase.MIGRATION_4_5, MusDatabase.MIGRATION_5_6)
             .fallbackToDestructiveMigration()
             .build()
     }
@@ -36,6 +36,7 @@ object AppModule {
     @Provides fun providePlaylistDao(db: MusDatabase): PlaylistDao = db.playlistDao()
     @Provides fun provideWaveformDao(db: MusDatabase): WaveformDao = db.waveformDao()
     @Provides fun providePaletteDao(db: MusDatabase): PaletteDao = db.paletteDao()
+    @Provides fun provideDownloadQueueDao(db: MusDatabase): com.mus.android.data.db.DownloadQueueDao = db.downloadQueueDao()
 
     @Provides
     @Singleton

@@ -198,8 +198,10 @@ class MetadataEnrichmentService @Inject constructor(
         }
 
         // Step 1: Check existing cached artwork ONLY if album and artist are known (never for placeholders)
+        // CRITICAL: Never overwrite artwork with MANUAL provenance — the user explicitly chose it.
+        val hasManualArtwork = track.artworkSource == com.mus.android.data.model.ArtworkSource.MANUAL
         var currentTrack = track
-        if (!hasValidArtwork(currentTrack)) {
+        if (!hasValidArtwork(currentTrack) && !hasManualArtwork) {
             if (!MetadataUtils.isPlaceholderAlbum(currentTrack.albumTitle) &&
                 !MetadataUtils.isPlaceholderArtist(currentTrack.albumArtist)
             ) {
@@ -510,6 +512,9 @@ class MetadataEnrichmentService @Inject constructor(
      * Applies confident remote metadata to the local Track via direct overwrite.
      * Overwrites song title, artist, album name, track number, year, genre directly.
      * Preserves valid embedded artwork if present, otherwise downloads remote cover art.
+     *
+     * IMPORTANT: If the track has MANUAL artwork provenance the artwork block is skipped entirely.
+     * The user's explicit choice is never overwritten by automatic enrichment.
      */
     suspend fun mergeMetadata(
         local: Track,
@@ -530,34 +535,43 @@ class MetadataEnrichmentService @Inject constructor(
         // Canonical album ID based on the resolved Album Artist + Album Title
         val newAlbumId = MetadataUtils.generateAlbumId(finalAlbumArtist, finalAlbumTitle)
 
-        // Artwork resolution: preserve valid embedded artwork if exists, otherwise download/reuse remote
+        // Artwork resolution: preserve valid embedded artwork if exists, otherwise download/reuse remote.
+        // CRITICAL: MANUAL artwork provenance is respected unconditionally — user selection wins.
         var finalArtworkUri = local.artworkUri
         var artworkSavedPath: String? = null
-        val hasEmbedded = artworkStorage.isEmbeddedArtwork(local.artworkUri) ||
-                artworkStorage.hasEmbeddedArtwork(newAlbumId) ||
-                artworkStorage.hasEmbeddedArtwork(local.albumId)
+        val hasManualArtwork = local.artworkSource == com.mus.android.data.model.ArtworkSource.MANUAL
 
-        if (hasEmbedded) {
-            finalArtworkUri = artworkStorage.getLocalArtworkUri(newAlbumId)
-                ?: artworkStorage.getLocalArtworkUri(local.albumId)
-                ?: local.artworkUri
-            artworkSavedPath = finalArtworkUri
+        if (hasManualArtwork) {
+            // Preserve the user's explicitly chosen artwork; only log for diagnostics.
+            artworkSavedPath = local.artworkUri
+            Log.i("DIAG_METADATA", "[Point 20a] Artwork preserved (MANUAL provenance) — skipping automatic artwork resolution for track ${local.id}")
         } else {
-            val cachedArt = artworkStorage.getLocalArtworkUri(newAlbumId)
-            if (cachedArt != null && !forceRefresh) {
-                finalArtworkUri = cachedArt
-                artworkSavedPath = cachedArt
-            } else if (!remote.artworkUrl.isNullOrBlank()) {
-                val downloaded = artworkStorage.downloadAndStoreArtwork(newAlbumId, remote.artworkUrl, forceOverwrite = forceRefresh)
-                if (downloaded != null) {
-                    finalArtworkUri = downloaded
-                    artworkSavedPath = downloaded
-                }
-            } else if (cachedArt != null) {
-                finalArtworkUri = cachedArt
-                artworkSavedPath = cachedArt
+            val hasEmbedded = artworkStorage.isEmbeddedArtwork(local.artworkUri) ||
+                    artworkStorage.hasEmbeddedArtwork(newAlbumId) ||
+                    artworkStorage.hasEmbeddedArtwork(local.albumId)
+
+            if (hasEmbedded) {
+                finalArtworkUri = artworkStorage.getLocalArtworkUri(newAlbumId)
+                    ?: artworkStorage.getLocalArtworkUri(local.albumId)
+                    ?: local.artworkUri
+                artworkSavedPath = finalArtworkUri
             } else {
-                artworkSavedPath = local.artworkUri
+                val cachedArt = artworkStorage.getLocalArtworkUri(newAlbumId)
+                if (cachedArt != null && !forceRefresh) {
+                    finalArtworkUri = cachedArt
+                    artworkSavedPath = cachedArt
+                } else if (!remote.artworkUrl.isNullOrBlank()) {
+                    val downloaded = artworkStorage.downloadAndStoreArtwork(newAlbumId, remote.artworkUrl, forceOverwrite = forceRefresh)
+                    if (downloaded != null) {
+                        finalArtworkUri = downloaded
+                        artworkSavedPath = downloaded
+                    }
+                } else if (cachedArt != null) {
+                    finalArtworkUri = cachedArt
+                    artworkSavedPath = cachedArt
+                } else {
+                    artworkSavedPath = local.artworkUri
+                }
             }
         }
 
@@ -578,6 +592,11 @@ class MetadataEnrichmentService @Inject constructor(
             genre = finalGenre,
             composer = finalComposer,
             artworkUri = finalArtworkUri,
+            // Preserve MANUAL artwork provenance — do not downgrade to EXTERNAL
+            artworkSource = if (hasManualArtwork) local.artworkSource else com.mus.android.data.model.ArtworkSource.EXTERNAL,
+            artworkProvider = if (hasManualArtwork) local.artworkProvider else null,
+            artworkRemoteId = if (hasManualArtwork) local.artworkRemoteId else null,
+            artworkLastUpdated = if (hasManualArtwork) local.artworkLastUpdated else System.currentTimeMillis(),
             metadataSource = MetadataSource.EXTERNAL,
             metadataStatus = MetadataStatus.COMPLETE,
             metadataConfidence = MetadataConfidence.HIGH,

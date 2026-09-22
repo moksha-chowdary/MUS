@@ -28,6 +28,10 @@ class AlbumViewModel @Inject constructor(
         .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
     init {
+        refreshAlbum()
+    }
+
+    fun refreshAlbum() {
         viewModelScope.launch {
             _album.value = repository.getAlbumById(albumId)
         }

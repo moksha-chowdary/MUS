@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -19,7 +21,14 @@ android {
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
+        // Read optional YouTube API credentials from local.properties (never committed to VCS)
+        val localProps = Properties()
+        val localPropsFile = rootProject.file("local.properties")
+        if (localPropsFile.exists()) localProps.load(localPropsFile.inputStream())
+
         buildConfigField("String", "MUS_BACKEND_URL", "\"https://api.mus.local\"")
+        buildConfigField("String", "YOUTUBE_API_KEY", "\"${localProps.getProperty("youtube.api.key", "")}\"")
+        buildConfigField("String", "YOUTUBE_OAUTH_CLIENT_ID", "\"${localProps.getProperty("youtube.oauth.client_id", "")}\"")
     }
 
     buildTypes {

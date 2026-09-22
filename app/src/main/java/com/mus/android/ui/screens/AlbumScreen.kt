@@ -10,6 +10,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Album
+import androidx.compose.material.icons.rounded.Edit
+import androidx.compose.material.icons.rounded.Image
+import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Shuffle
 import androidx.compose.material3.*
@@ -23,6 +26,7 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import coil.compose.AsyncImage
 import com.mus.android.data.model.Track
+import com.mus.android.ui.components.ArtworkSearchSheet
 import com.mus.android.ui.components.SongMenuContainer
 import com.mus.android.ui.components.TrackRow
 import com.mus.android.ui.components.formatDuration
@@ -40,6 +44,8 @@ fun AlbumScreen(
     val album by viewModel.album.collectAsState()
     val tracks by viewModel.tracks.collectAsState()
     var selectedTrackForMenu by remember { mutableStateOf<Track?>(null) }
+    var showArtworkPicker by remember { mutableStateOf(false) }
+    var showAlbumMenu by remember { mutableStateOf(false) }
 
     LazyColumn(
         modifier = Modifier
@@ -48,11 +54,13 @@ fun AlbumScreen(
         contentPadding = PaddingValues(bottom = 120.dp),
     ) {
         item {
-            // Back button
+            // Top bar
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(top = Spacing.xxxl, start = Spacing.sm),
+                    .padding(top = Spacing.xxxl, start = Spacing.sm, end = Spacing.sm),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
             ) {
                 IconButton(onClick = onBack) {
                     Icon(
@@ -60,6 +68,37 @@ fun AlbumScreen(
                         contentDescription = "Back",
                         tint = MusColors.OnBackground,
                     )
+                }
+
+                Box {
+                    IconButton(onClick = { showAlbumMenu = true }) {
+                        Icon(
+                            Icons.Rounded.MoreVert,
+                            contentDescription = "Album options",
+                            tint = MusColors.OnBackground,
+                        )
+                    }
+
+                    DropdownMenu(
+                        expanded = showAlbumMenu,
+                        onDismissRequest = { showAlbumMenu = false },
+                        containerColor = MusColors.SurfaceElevated,
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("Change Album Artwork", color = MusColors.OnBackground) },
+                            leadingIcon = {
+                                Icon(
+                                    Icons.Rounded.Image,
+                                    contentDescription = null,
+                                    tint = MusColors.OnBackgroundSecondary,
+                                )
+                            },
+                            onClick = {
+                                showAlbumMenu = false
+                                showArtworkPicker = true
+                            },
+                        )
+                    }
                 }
             }
         }
@@ -76,7 +115,8 @@ fun AlbumScreen(
                     modifier = Modifier
                         .size(240.dp)
                         .clip(RoundedCornerShape(12.dp))
-                        .background(MusColors.SurfaceVariant),
+                        .background(MusColors.SurfaceVariant)
+                        .clickable { showArtworkPicker = true },
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(
@@ -91,6 +131,23 @@ fun AlbumScreen(
                             contentDescription = album?.title,
                             contentScale = ContentScale.Crop,
                             modifier = Modifier.fillMaxSize()
+                        )
+                    }
+                    // Edit badge overlay
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(Spacing.sm)
+                            .size(32.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(MusColors.Surface.copy(alpha = 0.85f)),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Edit,
+                            contentDescription = "Change artwork",
+                            tint = MusColors.OnBackground,
+                            modifier = Modifier.size(16.dp),
                         )
                     }
                 }
@@ -166,4 +223,30 @@ fun AlbumScreen(
         selectedTrack = selectedTrackForMenu,
         onDismissMenu = { selectedTrackForMenu = null },
     )
+
+    val representativeTrack = remember(album, tracks) {
+        tracks.firstOrNull() ?: album?.let { alb ->
+            Track(
+                id = -1L,
+                title = alb.title,
+                artist = alb.artist,
+                albumId = alb.id,
+                albumTitle = alb.title,
+                duration = 0L,
+                uri = "",
+            )
+        }
+    }
+
+    if (showArtworkPicker && representativeTrack != null) {
+        ArtworkSearchSheet(
+            track = representativeTrack,
+            fromAlbum = true,
+            onBack = { showArtworkPicker = false },
+            onApplied = {
+                showArtworkPicker = false
+                viewModel.refreshAlbum()
+            },
+        )
+    }
 }

@@ -49,7 +49,8 @@ fun SongActionMenuSheet(
     onViewDetails: () -> Unit,
     onGoToAlbum: (() -> Unit)? = null,
     onGoToArtist: (() -> Unit)? = null,
-    onFixArtwork: (() -> Unit)? = null,
+    onChangeArtwork: (() -> Unit)? = null,   // opens manual picker
+    onFixArtwork: (() -> Unit)? = null,       // auto re-fetch (legacy)
     // Cross-playlist actions when inside a playlist
     playlistId: Long? = null,
     onMoveToPlaylist: (() -> Unit)? = null,
@@ -180,10 +181,19 @@ fun SongActionMenuSheet(
                 onClick = onShare,
             )
 
+            if (onChangeArtwork != null) {
+                SongActionItem(
+                    icon = Icons.Rounded.ImageSearch,
+                    title = "Change Artwork",
+                    subtitle = "Search and select the correct cover",
+                    onClick = onChangeArtwork,
+                )
+            }
+
             if (onFixArtwork != null) {
                 SongActionItem(
-                    icon = Icons.Rounded.ImageNotSupported,
-                    title = "Wrong album cover? Fix it",
+                    icon = Icons.Rounded.Refresh,
+                    title = "Re-fetch artwork automatically",
                     subtitle = "Clears cached cover and looks it up again",
                     onClick = onFixArtwork,
                 )
@@ -392,6 +402,7 @@ fun SongMenuContainer(
 ) {
     var activeTrack by remember { mutableStateOf<Track?>(null) }
     var showActionSheet by remember { mutableStateOf(false) }
+    var showArtworkSearch by remember { mutableStateOf(false) }
 
     LaunchedEffect(selectedTrack) {
         if (selectedTrack != null) {
@@ -423,6 +434,7 @@ fun SongMenuContainer(
         showDetailsDialog = false
         showDeleteConfirmation = false
         showRemoveFromPlaylistConfirmation = false
+        showArtworkSearch = false
         activeTrack = null
         onDismissMenu()
     }
@@ -487,6 +499,10 @@ fun SongMenuContainer(
                     onNavigateToArtist(currentTrack.artist)
                 }
             } else null,
+            onChangeArtwork = {
+                showActionSheet = false
+                showArtworkSearch = true
+            },
             onFixArtwork = {
                 closeAll()
                 viewModel.fixWrongArtwork(currentTrack.id)
@@ -657,7 +673,29 @@ fun SongMenuContainer(
             containerColor = MusColors.SurfaceElevated,
         )
     }
+
+    // Artwork search — full screen overlay
+    if (showArtworkSearch) {
+        ArtworkSearchSheet(
+            track = currentTrack,
+            fromAlbum = false,
+            onBack = {
+                showArtworkSearch = false
+                onDismissMenu()
+            },
+            onApplied = {
+                showArtworkSearch = false
+                android.widget.Toast.makeText(
+                    context,
+                    "Artwork updated",
+                    android.widget.Toast.LENGTH_SHORT
+                ).show()
+                onDismissMenu()
+            },
+        )
+    }
 }
+
 
 private fun shareTrack(context: Context, track: Track) {
     val shareText = "Listening to \"${track.title}\" by ${track.artist} on MUS"

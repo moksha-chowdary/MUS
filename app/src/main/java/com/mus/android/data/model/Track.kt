@@ -32,11 +32,20 @@ data class Track(
     val language: String = "English",
     val playCount: Int = 0,
     val lastPlayed: Long = 0,
-    
+
     // Metadata Enrichment Fields
     val artistArtworkUri: String? = null,
     val metadataSource: String = MetadataSource.EMBEDDED, // EMBEDDED, EXTERNAL, MERGED
     val metadataStatus: String = MetadataStatus.NEEDS_LOOKUP, // COMPLETE, PARTIAL, ENRICHING, FAILED, NEEDS_REVIEW, NEEDS_LOOKUP
     val metadataConfidence: String = MetadataConfidence.HIGH, // HIGH, LOW
     val metadataLastUpdated: Long = 0,
+
+    // Artwork Provenance Fields
+    // Priority: MANUAL > EMBEDDED > EXTERNAL > NONE
+    // A MANUAL artwork is NEVER overwritten by automatic enrichment.
+    val artworkSource: String = ArtworkSource.NONE,       // who set the artwork
+    val artworkProvider: String? = null,                   // e.g. "iTunes", "YouTube"
+    val artworkRemoteId: String? = null,                   // provider-specific track/item ID
+    val artworkLastUpdated: Long = 0,                      // epoch ms when artwork was last changed
 )
+

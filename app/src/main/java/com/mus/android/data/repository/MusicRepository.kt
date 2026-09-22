@@ -22,6 +22,7 @@ class MusicRepository @Inject constructor(
     private val artistDao: ArtistDao,
     private val playlistDao: PlaylistDao,
     private val waveformDao: WaveformDao,
+    private val downloadQueueDao: DownloadQueueDao,
     private val scanner: MediaStoreScanner,
     private val waveformExtractor: WaveformExtractor,
     private val userPreferences: UserPreferencesRepository,
@@ -599,5 +600,160 @@ class MusicRepository @Inject constructor(
     // ── Waveform ──────────────────────────────────────────────
     suspend fun getWaveform(trackId: Long, uri: String): List<Float>? {
         return waveformExtractor.getWaveform(trackId, uri)
+    }
+
+    // ── Manual Artwork ────────────────────────────────────────
+
+    /**
+     * Applies a user-selected artwork result to a single track.
+     * Downloads the artwork to persistent storage, writes MANUAL provenance,
+     * and updates only that track's Room row.
+     *
+     * Does NOT trigger any rescan or metadata enrichment.
+     * Does NOT affect any other tracks.
+     *
+     * Returns the updated Track, or null if the track was not found.
+     */
+    suspend fun applyManualArtwork(
+        trackId: Long,
+        artworkUrl: String,
+        provider: String,
+        remoteId: String?,
+    ): Track? = withContext(Dispatchers.IO) {
+        val track = trackDao.getTrackById(trackId) ?: return@withContext null
+
+        // Download artwork to persistent local storage using a MANUAL-scoped key
+        val artworkKey = "manual_track_${trackId}"
+        val localUri = artworkStorage.downloadAndStoreArtworkByKey(
+            artworkKey = artworkKey,
+            imageUrl = artworkUrl,
+            forceOverwrite = true,
+        ) ?: return@withContext null
+
+        val updated = track.copy(
+            artworkUri = localUri,
+            artworkSource = ArtworkSource.MANUAL,
+            artworkProvider = provider,
+            artworkRemoteId = remoteId,
+            artworkLastUpdated = System.currentTimeMillis(),
+        )
+        trackDao.update(updated)
+
+        // Also update the Album row so the album page reflects the change immediately
+        val album = albumDao.getAlbumById(track.albumId)
+        if (album != null) {
+            albumDao.insertAll(listOf(album.copy(artworkUri = localUri)))
+        }
+        updated
+    }
+
+    /**
+     * Applies a user-selected artwork to every track that belongs to the given album.
+     * Scoped strictly to tracks matching [albumId] — never affects tracks in other albums,
+     * even if they share the same artist name.
+     *
+     * Downloads a single copy of the artwork and shares the local URI across all affected tracks.
+     *
+     * Returns the number of tracks updated.
+     */
+    suspend fun applyManualArtworkToAlbum(
+        albumId: Long,
+        artworkUrl: String,
+        provider: String,
+        remoteId: String?,
+    ): Int = withContext(Dispatchers.IO) {
+        if (albumId <= 0L) return@withContext 0
+
+        // Download once, share across all affected tracks
+        val artworkKey = "manual_album_${albumId}"
+        val localUri = artworkStorage.downloadAndStoreArtworkByKey(
+            artworkKey = artworkKey,
+            imageUrl = artworkUrl,
+            forceOverwrite = true,
+        ) ?: return@withContext 0
+
+        // Fetch only tracks that belong to this exact album identity
+        val albumTracks = trackDao.getAllTracksOnce().filter { it.albumId == albumId }
+        val now = System.currentTimeMillis()
+
+        var updatedCount = 0
+        database.withTransaction {
+            for (track in albumTracks) {
+                val updated = track.copy(
+                    artworkUri = localUri,
+                    artworkSource = ArtworkSource.MANUAL,
+                    artworkProvider = provider,
+                    artworkRemoteId = remoteId,
+                    artworkLastUpdated = now,
+                )
+                trackDao.update(updated)
+                updatedCount++
+            }
+
+            // Update Album entity
+            val album = albumDao.getAlbumById(albumId)
+            if (album != null) {
+                albumDao.insertAll(listOf(album.copy(artworkUri = localUri)))
+            }
+        }
+        updatedCount
+    }
+
+    // ── Download Queue ("MUS — To Download") ──────────────────
+
+    /** Observes the full To Download list, ordered by date added desc. */
+    fun getDownloadQueue(): kotlinx.coroutines.flow.Flow<List<DownloadQueueItem>> =
+        downloadQueueDao.observeAll()
+
+    /** Observes the count of items still in TO_DOWNLOAD status. */
+    fun observePendingDownloadCount(): kotlinx.coroutines.flow.Flow<Int> =
+        downloadQueueDao.observePendingCount()
+
+    /**
+     * Adds an online result to the To Download planning list.
+     * Deduplicates by "${source}_${sourceId}" — adding the same source+ID twice is a no-op.
+     *
+     * MUS never downloads audio. This is a metadata-only planning record.
+     *
+     * Returns true if the item was newly added, false if it was already present.
+     */
+    suspend fun addToDownloadQueue(
+        result: com.mus.android.data.enrichment.provider.OnlineSearchResult,
+    ): Boolean = withContext(Dispatchers.IO) {
+        val id = "${result.source}_${result.sourceId}"
+        if (downloadQueueDao.exists(id) > 0) return@withContext false
+
+        val item = DownloadQueueItem(
+            id = id,
+            title = result.title,
+            artist = result.artist,
+            album = result.album,
+            artworkUrl = result.artworkUrl,
+            source = result.source,
+            sourceId = result.sourceId,
+            sourceUrl = result.sourceUrl,
+            dateAdded = System.currentTimeMillis(),
+            status = DownloadStatus.TO_DOWNLOAD,
+        )
+        downloadQueueDao.insert(item) > 0
+    }
+
+    /**
+     * Removes an item from the To Download list by its composite ID.
+     * Does NOT delete any local audio files.
+     */
+    suspend fun removeFromDownloadQueue(id: String) = withContext(Dispatchers.IO) {
+        downloadQueueDao.deleteById(id)
+    }
+
+    /**
+     * Updates the status of a To Download item (e.g. mark as DOWNLOADED, ADDED_TO_LIBRARY, FAILED).
+     */
+    suspend fun updateDownloadQueueStatus(id: String, status: String) = withContext(Dispatchers.IO) {
+        downloadQueueDao.updateStatus(id, status)
+    }
+
+    suspend fun getDownloadQueueItemById(id: String): DownloadQueueItem? = withContext(Dispatchers.IO) {
+        downloadQueueDao.getById(id)
     }
 }

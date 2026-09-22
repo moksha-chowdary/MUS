@@ -28,6 +28,7 @@ sealed class MusRoute(val route: String) {
         fun create(playlistId: Long) = "playlist/$playlistId"
     }
     data object Settings : MusRoute("settings")
+    data object DownloadQueue : MusRoute("download_queue")
 }
 
 @Composable
@@ -56,6 +57,7 @@ fun MusNavHost(
                 onTrackClick = onTrackClick,
                 onAlbumClick = { navController.navigate(MusRoute.Album.create(it)) },
                 onArtistClick = { navController.navigate(MusRoute.Artist.create(it)) },
+                onDownloadQueueClick = { navController.navigate(MusRoute.DownloadQueue.route) },
             )
         }
 
@@ -129,6 +131,9 @@ fun MusNavHost(
         composable(MusRoute.Settings.route) {
             SettingsScreen(onBack = { navController.popBackStack() })
         }
+
+        composable(MusRoute.DownloadQueue.route) {
+            DownloadQueueScreen(onBack = { navController.popBackStack() })
+        }
     }
 }
-

@@ -20,20 +20,28 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.mus.android.data.enrichment.provider.OnlineSearchResult
 import com.mus.android.data.model.Track
 import com.mus.android.ui.components.AlbumCard
+import com.mus.android.ui.components.OnlineResultSheet
+import com.mus.android.ui.components.OnlineTrackRow
 import com.mus.android.ui.components.SongMenuContainer
 import com.mus.android.ui.components.TrackRow
 import com.mus.android.ui.theme.MusColors
 import com.mus.android.ui.theme.Spacing
+import com.mus.android.ui.viewmodel.DiscoveryViewModel
 import com.mus.android.ui.viewmodel.SearchViewModel
+
+private enum class SearchTab { LOCAL, ONLINE }
 
 @Composable
 fun SearchScreen(
     onTrackClick: (Track, List<Track>) -> Unit,
     onAlbumClick: (Long) -> Unit,
     onArtistClick: (Long) -> Unit,
+    onDownloadQueueClick: () -> Unit = {},
     viewModel: SearchViewModel = hiltViewModel(),
+    discoveryViewModel: DiscoveryViewModel = hiltViewModel(),
 ) {
     val query by viewModel.query.collectAsState()
     val trackResults by viewModel.trackResults.collectAsState()
@@ -43,199 +51,173 @@ fun SearchScreen(
     val focusRequester = remember { FocusRequester() }
     var selectedTrackForMenu by remember { mutableStateOf<Track?>(null) }
 
+    val onlineResults by discoveryViewModel.onlineResults.collectAsState()
+    val isSearchingOnline by discoveryViewModel.isSearching.collectAsState()
+    val addToQueueResult by discoveryViewModel.addToQueueResult.collectAsState()
+
+    var activeTab by remember { mutableStateOf(SearchTab.LOCAL) }
     var selectedFilter by remember { mutableStateOf("All") }
     val filterOptions = listOf("All", "Songs", "Albums", "Artists")
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color.Transparent)
-    ) {
-        Spacer(Modifier.height(Spacing.xxxl))
+    var selectedOnlineResult by remember { mutableStateOf<OnlineSearchResult?>(null) }
 
-        // Search bar
-        Row(
+    // Show toast when item is added to download queue
+    val snackbarHostState = remember { SnackbarHostState() }
+    LaunchedEffect(addToQueueResult) {
+        val msg = addToQueueResult ?: return@LaunchedEffect
+        snackbarHostState.showSnackbar(msg, duration = SnackbarDuration.Short)
+        discoveryViewModel.clearAddToQueueResult()
+    }
+
+    // Sync query to discovery when on ONLINE tab
+    LaunchedEffect(query, activeTab) {
+        if (activeTab == SearchTab.ONLINE && query.isNotBlank()) {
+            discoveryViewModel.updateQuery(query)
+        }
+    }
+
+    Scaffold(
+        snackbarHost = { SnackbarHost(snackbarHostState) },
+        containerColor = Color.Transparent,
+    ) { innerPadding ->
+        Column(
             modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = Spacing.base)
-                .background(MusColors.SurfaceVariant, MaterialTheme.shapes.medium)
-                .padding(horizontal = Spacing.md, vertical = Spacing.md),
-            verticalAlignment = Alignment.CenterVertically,
+                .fillMaxSize()
+                .padding(innerPadding)
+                .background(Color.Transparent)
         ) {
-            Icon(
-                Icons.Rounded.Search,
-                contentDescription = null,
-                tint = MusColors.OnBackgroundTertiary,
-                modifier = Modifier.size(20.dp),
-            )
-            Spacer(Modifier.width(Spacing.sm))
-            BasicTextField(
-                value = query,
-                onValueChange = { viewModel.updateQuery(it) },
-                textStyle = MaterialTheme.typography.bodyLarge.copy(
-                    color = MusColors.OnBackground,
-                ),
-                cursorBrush = SolidColor(MusColors.OnBackground),
-                singleLine = true,
+            Spacer(Modifier.height(Spacing.xxxl))
+
+            // Search bar
+            Row(
                 modifier = Modifier
-                    .weight(1f)
-                    .focusRequester(focusRequester),
-                decorationBox = { innerTextField ->
-                    if (query.isEmpty()) {
-                        Text(
-                            "Search songs, albums, artists...",
-                            style = MaterialTheme.typography.bodyLarge,
-                            color = MusColors.OnBackgroundTertiary,
-                        )
-                    }
-                    innerTextField()
-                }
-            )
-            if (query.isNotEmpty()) {
-                IconButton(
-                    onClick = { viewModel.updateQuery("") },
+                    .fillMaxWidth()
+                    .padding(horizontal = Spacing.base)
+                    .background(MusColors.SurfaceVariant, MaterialTheme.shapes.medium)
+                    .padding(horizontal = Spacing.md, vertical = Spacing.md),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    Icons.Rounded.Search,
+                    contentDescription = null,
+                    tint = MusColors.OnBackgroundTertiary,
                     modifier = Modifier.size(20.dp),
-                ) {
-                    Icon(
-                        Icons.Rounded.Clear,
-                        contentDescription = "Clear",
-                        tint = MusColors.OnBackgroundTertiary,
-                    )
+                )
+                Spacer(Modifier.width(Spacing.sm))
+                BasicTextField(
+                    value = query,
+                    onValueChange = {
+                        viewModel.updateQuery(it)
+                        if (activeTab == SearchTab.ONLINE) {
+                            discoveryViewModel.updateQuery(it)
+                        }
+                    },
+                    textStyle = MaterialTheme.typography.bodyLarge.copy(
+                        color = MusColors.OnBackground,
+                    ),
+                    cursorBrush = SolidColor(MusColors.OnBackground),
+                    singleLine = true,
+                    modifier = Modifier
+                        .weight(1f)
+                        .focusRequester(focusRequester),
+                    decorationBox = { innerTextField ->
+                        if (query.isEmpty()) {
+                            Text(
+                                "Search songs, artists, albums...",
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = MusColors.OnBackgroundTertiary,
+                            )
+                        }
+                        innerTextField()
+                    }
+                )
+                if (query.isNotEmpty()) {
+                    IconButton(
+                        onClick = {
+                            viewModel.updateQuery("")
+                            discoveryViewModel.updateQuery("")
+                        },
+                        modifier = Modifier.size(20.dp),
+                    ) {
+                        Icon(
+                            Icons.Rounded.Clear,
+                            contentDescription = "Clear",
+                            tint = MusColors.OnBackgroundTertiary,
+                        )
+                    }
                 }
             }
-        }
 
-        // Filter chips when query is not blank
-        if (query.isNotBlank()) {
+            // LOCAL / ONLINE tab row
             Spacer(Modifier.height(Spacing.sm))
-            LazyRow(
-                contentPadding = PaddingValues(horizontal = Spacing.base),
-                horizontalArrangement = Arrangement.spacedBy(Spacing.xs),
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = Spacing.base),
+                horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
             ) {
-                items(filterOptions) { filter ->
-                    val isSelected = selectedFilter == filter
-                    FilterChip(
-                        selected = isSelected,
-                        onClick = { selectedFilter = filter },
-                        label = { Text(filter, style = MaterialTheme.typography.labelSmall) },
-                        colors = FilterChipDefaults.filterChipColors(
-                            selectedContainerColor = MusColors.OnBackground,
-                            selectedLabelColor = MusColors.Background,
-                            containerColor = MusColors.SurfaceVariant,
-                            labelColor = MusColors.OnBackgroundSecondary,
-                        ),
-                        border = null,
-                    )
-                }
-            }
-        }
-
-        Spacer(Modifier.height(Spacing.sm))
-
-        if (query.isEmpty()) {
-            // Empty state
-            Box(
-                modifier = Modifier.fillMaxSize(),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(
-                    "Search your music library",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MusColors.OnBackgroundTertiary,
-                    textAlign = TextAlign.Center,
+                SearchTabChip(
+                    label = "Your Library",
+                    selected = activeTab == SearchTab.LOCAL,
+                    onClick = { activeTab = SearchTab.LOCAL },
+                )
+                SearchTabChip(
+                    label = "Online",
+                    selected = activeTab == SearchTab.ONLINE,
+                    onClick = {
+                        activeTab = SearchTab.ONLINE
+                        if (query.isNotBlank()) discoveryViewModel.searchOnline(query)
+                    },
                 )
             }
-        } else if (!hasResults) {
-            Box(
-                modifier = Modifier.fillMaxSize(),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(
-                    "No results for \"$query\"",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MusColors.OnBackgroundTertiary,
-                    textAlign = TextAlign.Center,
-                )
+
+            // Filter chips — only on LOCAL tab
+            if (activeTab == SearchTab.LOCAL && query.isNotBlank()) {
+                Spacer(Modifier.height(Spacing.sm))
+                LazyRow(
+                    contentPadding = PaddingValues(horizontal = Spacing.base),
+                    horizontalArrangement = Arrangement.spacedBy(Spacing.xs),
+                ) {
+                    items(filterOptions) { filter ->
+                        val isSelected = selectedFilter == filter
+                        FilterChip(
+                            selected = isSelected,
+                            onClick = { selectedFilter = filter },
+                            label = { Text(filter, style = MaterialTheme.typography.labelSmall) },
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = MusColors.OnBackground,
+                                selectedLabelColor = MusColors.Background,
+                                containerColor = MusColors.SurfaceVariant,
+                                labelColor = MusColors.OnBackgroundSecondary,
+                            ),
+                            border = null,
+                        )
+                    }
+                }
             }
-        } else {
-            LazyColumn(
-                contentPadding = PaddingValues(bottom = 120.dp),
-            ) {
-                // Artists section
-                if ((selectedFilter == "All" || selectedFilter == "Artists") && artistResults.isNotEmpty()) {
-                    item {
-                        Text(
-                            "Artists",
-                            style = MaterialTheme.typography.titleSmall,
-                            color = MusColors.OnBackground,
-                            modifier = Modifier.padding(horizontal = Spacing.base, vertical = Spacing.xs),
-                        )
-                        Spacer(Modifier.height(Spacing.xs))
-                    }
-                    item {
-                        LazyRow(
-                            contentPadding = PaddingValues(horizontal = Spacing.base),
-                            horizontalArrangement = Arrangement.spacedBy(Spacing.md),
-                        ) {
-                            items(artistResults, key = { it.id }) { artist ->
-                                com.mus.android.ui.components.ArtistCard(
-                                    name = artist.name,
-                                    artworkUri = artist.artworkUri,
-                                    onClick = { onArtistClick(artist.id) },
-                                )
-                            }
-                        }
-                        Spacer(Modifier.height(Spacing.md))
-                    }
-                }
 
-                // Albums section
-                if ((selectedFilter == "All" || selectedFilter == "Albums") && albumResults.isNotEmpty()) {
-                    item {
-                        Text(
-                            "Albums",
-                            style = MaterialTheme.typography.titleSmall,
-                            color = MusColors.OnBackground,
-                            modifier = Modifier.padding(horizontal = Spacing.base, vertical = Spacing.xs),
-                        )
-                        Spacer(Modifier.height(Spacing.xs))
-                    }
-                    item {
-                        LazyRow(
-                            contentPadding = PaddingValues(horizontal = Spacing.base),
-                            horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
-                        ) {
-                            items(albumResults, key = { it.id }) { album ->
-                                com.mus.android.ui.components.AlbumCard(
-                                    title = album.title,
-                                    artist = album.artist,
-                                    artworkUri = album.artworkUri,
-                                    onClick = { onAlbumClick(album.id) },
-                                )
-                            }
-                        }
-                        Spacer(Modifier.height(Spacing.md))
-                    }
-                }
+            Spacer(Modifier.height(Spacing.sm))
 
-                // Songs section
-                if ((selectedFilter == "All" || selectedFilter == "Songs") && trackResults.isNotEmpty()) {
-                    item {
-                        Text(
-                            "Songs",
-                            style = MaterialTheme.typography.titleSmall,
-                            color = MusColors.OnBackground,
-                            modifier = Modifier.padding(horizontal = Spacing.base, vertical = Spacing.xs),
-                        )
-                    }
-                    items(trackResults, key = { it.id }) { track ->
-                        TrackRow(
-                            track = track,
-                            onClick = { onTrackClick(track, trackResults) },
-                            onMoreClick = { selectedTrackForMenu = track },
-                        )
-                    }
-                }
+            when (activeTab) {
+                SearchTab.LOCAL -> LocalSearchContent(
+                    query = query,
+                    hasResults = hasResults,
+                    selectedFilter = selectedFilter,
+                    trackResults = trackResults,
+                    albumResults = albumResults,
+                    artistResults = artistResults,
+                    onTrackClick = onTrackClick,
+                    onAlbumClick = onAlbumClick,
+                    onArtistClick = onArtistClick,
+                    onTrackMenuClick = { selectedTrackForMenu = it },
+                )
+                SearchTab.ONLINE -> OnlineSearchContent(
+                    query = query,
+                    results = onlineResults,
+                    isSearching = isSearchingOnline,
+                    onResultClick = { selectedOnlineResult = it },
+                    onDownloadQueueClick = onDownloadQueueClick,
+                )
             }
         }
     }
@@ -246,7 +228,212 @@ fun SearchScreen(
         onNavigateToAlbum = onAlbumClick,
     )
 
+    selectedOnlineResult?.let { result ->
+        OnlineResultSheet(
+            result = result,
+            onDismiss = { selectedOnlineResult = null },
+            onAddToDownloadList = {
+                discoveryViewModel.addToDownloadQueue(result)
+                selectedOnlineResult = null
+            },
+        )
+    }
+
     LaunchedEffect(Unit) {
         focusRequester.requestFocus()
     }
+}
+
+@Composable
+private fun SearchTabChip(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    FilterChip(
+        selected = selected,
+        onClick = onClick,
+        label = { Text(label, style = MaterialTheme.typography.labelMedium) },
+        colors = FilterChipDefaults.filterChipColors(
+            selectedContainerColor = MusColors.OnBackground,
+            selectedLabelColor = MusColors.Background,
+            containerColor = MusColors.SurfaceVariant,
+            labelColor = MusColors.OnBackgroundSecondary,
+        ),
+        border = null,
+    )
+}
+
+@Composable
+private fun LocalSearchContent(
+    query: String,
+    hasResults: Boolean,
+    selectedFilter: String,
+    trackResults: List<Track>,
+    albumResults: List<com.mus.android.data.model.Album>,
+    artistResults: List<com.mus.android.data.model.Artist>,
+    onTrackClick: (Track, List<Track>) -> Unit,
+    onAlbumClick: (Long) -> Unit,
+    onArtistClick: (Long) -> Unit,
+    onTrackMenuClick: (Track) -> Unit,
+) {
+    if (query.isEmpty()) {
+        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Text(
+                "Search your music library",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MusColors.OnBackgroundTertiary,
+                textAlign = TextAlign.Center,
+            )
+        }
+    } else if (!hasResults) {
+        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Text(
+                "No results for \"$query\"",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MusColors.OnBackgroundTertiary,
+                textAlign = TextAlign.Center,
+            )
+        }
+    } else {
+        LazyColumn(contentPadding = PaddingValues(bottom = 120.dp)) {
+            if ((selectedFilter == "All" || selectedFilter == "Artists") && artistResults.isNotEmpty()) {
+                item {
+                    SectionHeader("Artists")
+                    LazyRow(
+                        contentPadding = PaddingValues(horizontal = Spacing.base),
+                        horizontalArrangement = Arrangement.spacedBy(Spacing.md),
+                    ) {
+                        items(artistResults, key = { it.id }) { artist ->
+                            com.mus.android.ui.components.ArtistCard(
+                                name = artist.name,
+                                artworkUri = artist.artworkUri,
+                                onClick = { onArtistClick(artist.id) },
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(Spacing.md))
+                }
+            }
+
+            if ((selectedFilter == "All" || selectedFilter == "Albums") && albumResults.isNotEmpty()) {
+                item {
+                    SectionHeader("Albums")
+                    LazyRow(
+                        contentPadding = PaddingValues(horizontal = Spacing.base),
+                        horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
+                    ) {
+                        items(albumResults, key = { it.id }) { album ->
+                            AlbumCard(
+                                title = album.title,
+                                artist = album.artist,
+                                artworkUri = album.artworkUri,
+                                onClick = { onAlbumClick(album.id) },
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(Spacing.md))
+                }
+            }
+
+            if ((selectedFilter == "All" || selectedFilter == "Songs") && trackResults.isNotEmpty()) {
+                item { SectionHeader("Songs") }
+                items(trackResults, key = { it.id }) { track ->
+                    TrackRow(
+                        track = track,
+                        onClick = { onTrackClick(track, trackResults) },
+                        onMoreClick = { onTrackMenuClick(track) },
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun OnlineSearchContent(
+    query: String,
+    results: List<OnlineSearchResult>,
+    isSearching: Boolean,
+    onResultClick: (OnlineSearchResult) -> Unit,
+    onDownloadQueueClick: () -> Unit,
+) {
+    when {
+        query.isEmpty() -> {
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text(
+                    "Search for songs, artists, or albums online",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MusColors.OnBackgroundTertiary,
+                    textAlign = TextAlign.Center,
+                )
+            }
+        }
+        isSearching -> {
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator(
+                    color = MusColors.OnBackground,
+                    strokeWidth = 2.dp,
+                )
+            }
+        }
+        results.isEmpty() -> {
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text(
+                    "No online results for \"$query\"",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MusColors.OnBackgroundTertiary,
+                    textAlign = TextAlign.Center,
+                )
+            }
+        }
+        else -> {
+            LazyColumn(contentPadding = PaddingValues(bottom = 120.dp)) {
+                item {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = Spacing.base, vertical = Spacing.xs),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        SectionHeaderInline("Online Results")
+                        Spacer(Modifier.weight(1f))
+                        TextButton(onClick = onDownloadQueueClick) {
+                            Text(
+                                "MUS To Download",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MusColors.OnBackgroundSecondary,
+                            )
+                        }
+                    }
+                }
+
+                items(results, key = { it.id }) { result ->
+                    OnlineTrackRow(
+                        result = result,
+                        onClick = { onResultClick(result) },
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SectionHeader(title: String) {
+    Text(
+        text = title,
+        style = MaterialTheme.typography.titleSmall,
+        color = MusColors.OnBackground,
+        modifier = Modifier.padding(horizontal = Spacing.base, vertical = Spacing.xs),
+    )
+}
+
+@Composable
+private fun SectionHeaderInline(title: String) {
+    Text(
+        text = title,
+        style = MaterialTheme.typography.titleSmall,
+        color = MusColors.OnBackground,
+    )
 }
