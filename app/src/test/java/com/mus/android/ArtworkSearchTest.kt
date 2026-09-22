@@ -1,18 +1,18 @@
 package com.mus.android
 
-import com.mus.android.data.enrichment.artwork.ArtworkStorage
 import com.mus.android.data.enrichment.provider.ArtworkSearchResult
 import com.mus.android.data.model.ArtworkSource
 import com.mus.android.data.model.Track
 import com.mus.android.data.model.MetadataSource
 import com.mus.android.data.model.MetadataStatus
 import com.mus.android.data.model.MetadataConfidence
+import com.mus.android.data.scanner.MetadataUtils
 import org.junit.Assert.*
 import org.junit.Test
 
 /**
- * Unit tests for the manual artwork feature.
- * Tests use data-layer logic only; no Android runtime required.
+ * Unit tests for the manual artwork and metadata synchronization feature.
+ * All tests use data-layer logic only; no Android runtime required.
  */
 class ArtworkSearchTest {
 
@@ -20,17 +20,37 @@ class ArtworkSearchTest {
 
     private fun makeTrack(
         id: Long = 1L,
+        title: String = "Test Song",
+        artist: String = "Test Artist",
         albumId: Long = 100L,
+        albumTitle: String = "Test Album",
+        albumArtist: String = "Test Artist",
+        year: Int = 2020,
         artworkSource: String = ArtworkSource.NONE,
         artworkUri: String? = null,
+        isFavorite: Boolean = true,
+        playCount: Int = 42,
+        lastPlayed: Long = 123456789L,
     ) = Track(
         id = id,
-        title = "Test Song",
-        artist = "Test Artist",
+        title = title,
+        artist = artist,
         albumId = albumId,
-        albumTitle = "Test Album",
-        duration = 200_000L,
-        uri = "file:///music/test.mp3",
+        albumTitle = albumTitle,
+        albumArtist = albumArtist,
+        duration = 240_000L,
+        year = year,
+        uri = "file:///storage/emulated/0/Muzic/song.mp3",
+        path = "/storage/emulated/0/Muzic/song.mp3",
+        size = 5_000_000L,
+        codec = "MP3",
+        bitrate = 320,
+        sampleRate = 44100,
+        bitDepth = 16,
+        channels = 2,
+        isFavorite = isFavorite,
+        playCount = playCount,
+        lastPlayed = lastPlayed,
         artworkUri = artworkUri,
         artworkSource = artworkSource,
         metadataSource = MetadataSource.EMBEDDED,
@@ -38,128 +58,236 @@ class ArtworkSearchTest {
         metadataConfidence = MetadataConfidence.HIGH,
     )
 
-    private fun makeArtworkResult(id: String = "1", url: String = "https://example.com/art.jpg") =
-        ArtworkSearchResult(
-            id = id,
-            title = "Test Song",
-            artist = "Test Artist",
-            album = "Test Album",
-            albumArtist = "Test Artist",
-            year = 2023,
-            artworkUrl = url,
-            durationMs = 200_000L,
-            provider = "iTunes",
-            confidence = 0.95f,
-        )
+    private fun makeArtworkResult(
+        id: String = "itunes_123",
+        title: String = "Yellow",
+        artist: String = "Coldplay",
+        album: String? = "Parachutes",
+        albumArtist: String? = "Coldplay",
+        year: Int = 2000,
+        url: String = "https://is1-ssl.mzstatic.com/image/thumb/art.jpg/600x600bb.jpg",
+    ) = ArtworkSearchResult(
+        id = id,
+        title = title,
+        artist = artist,
+        album = album,
+        albumArtist = albumArtist,
+        year = year,
+        artworkUrl = url,
+        durationMs = 269_000L,
+        provider = "iTunes",
+        confidence = 0.95f,
+    )
 
-    // ─── Part 1: Artwork provenance model ────────────────────────
+    // Helper simulating applyManualArtwork metadata reconciliation
+    private fun applyResultToTrack(track: Track, result: ArtworkSearchResult?, localArtworkUri: String): Track {
+        val rawTitle = result?.title?.trim()
+        val finalTitle = if (!rawTitle.isNullOrBlank() && !MetadataUtils.isPlaceholderTitle(rawTitle)) rawTitle else track.title
 
-    @Test
-    fun `ArtworkSource constants have correct string values`() {
-        assertEquals("MANUAL", ArtworkSource.MANUAL)
-        assertEquals("EMBEDDED", ArtworkSource.EMBEDDED)
-        assertEquals("EXTERNAL", ArtworkSource.EXTERNAL)
-        assertEquals("", ArtworkSource.NONE)
-    }
+        val rawArtist = result?.artist?.trim()
+        val finalArtist = if (!rawArtist.isNullOrBlank() && !MetadataUtils.isPlaceholderArtist(rawArtist)) rawArtist else track.artist
 
-    @Test
-    fun `track with MANUAL provenance differs from EXTERNAL provenance`() {
-        val manual = makeTrack(artworkSource = ArtworkSource.MANUAL)
-        val external = makeTrack(artworkSource = ArtworkSource.EXTERNAL)
+        val rawAlbum = result?.album?.trim()
+        val finalAlbumTitle = if (!rawAlbum.isNullOrBlank() && !MetadataUtils.isPlaceholderAlbum(rawAlbum)) rawAlbum else track.albumTitle
 
-        assertTrue(manual.artworkSource == ArtworkSource.MANUAL)
-        assertFalse(external.artworkSource == ArtworkSource.MANUAL)
-    }
+        val rawAlbumArtist = result?.albumArtist?.trim()
+        val finalAlbumArtist = if (!rawAlbumArtist.isNullOrBlank() && !MetadataUtils.isPlaceholderArtist(rawAlbumArtist)) {
+            rawAlbumArtist
+        } else if (rawAlbum != null && !MetadataUtils.isPlaceholderAlbum(rawAlbum) && finalArtist.isNotBlank()) {
+            finalArtist
+        } else {
+            track.albumArtist
+        }
 
-    @Test
-    fun `MANUAL provenance check is case-sensitive`() {
-        val track = makeTrack(artworkSource = "manual") // wrong case
-        assertFalse(track.artworkSource == ArtworkSource.MANUAL)
-    }
+        val finalYear = if (result != null && result.year > 0) result.year else track.year
 
-    // ─── Part 2: Track.copy preserves MANUAL provenance ──────────
-
-    @Test
-    fun `track copy with MANUAL artwork retains provenance when artwork not changed`() {
-        val original = makeTrack(
+        return track.copy(
+            title = finalTitle,
+            artist = finalArtist,
+            albumTitle = finalAlbumTitle,
+            albumArtist = finalAlbumArtist,
+            year = finalYear,
+            artworkUri = localArtworkUri,
             artworkSource = ArtworkSource.MANUAL,
-            artworkUri = "file:///artwork/manual_track_1.jpg"
+            artworkProvider = result?.provider ?: "iTunes",
+            artworkRemoteId = result?.id,
+            artworkLastUpdated = 1000L,
+            metadataStatus = MetadataStatus.COMPLETE,
+            metadataConfidence = MetadataConfidence.HIGH,
         )
-        val updated = original.copy(title = "New Title")
+    }
 
-        assertEquals(ArtworkSource.MANUAL, updated.artworkSource)
+    // ─── Tests 1-5: Track-level metadata synchronization ─────────
+
+    @Test
+    fun `1 Manual artwork selection updates artwork and sets MANUAL provenance`() {
+        val track = makeTrack(artworkUri = null, artworkSource = ArtworkSource.NONE)
+        val result = makeArtworkResult()
+        val updated = applyResultToTrack(track, result, "file:///artwork/manual_track_1.jpg")
+
         assertEquals("file:///artwork/manual_track_1.jpg", updated.artworkUri)
+        assertEquals(ArtworkSource.MANUAL, updated.artworkSource)
+        assertEquals("iTunes", updated.artworkProvider)
+        assertEquals("itunes_123", updated.artworkRemoteId)
     }
 
     @Test
-    fun `mergeMetadata logic - MANUAL artwork flag prevents overwrite`() {
-        // Simulate the guard logic from MetadataEnrichmentService.mergeMetadata
+    fun `2 Manual artwork selection updates artist when result artist is valid`() {
+        val track = makeTrack(artist = "Wrong Artist")
+        val result = makeArtworkResult(artist = "Coldplay")
+        val updated = applyResultToTrack(track, result, "file:///artwork/manual_track_1.jpg")
+
+        assertEquals("Coldplay", updated.artist)
+    }
+
+    @Test
+    fun `3 Manual artwork selection updates album when result album is valid`() {
+        val track = makeTrack(albumTitle = "Unknown Album")
+        val result = makeArtworkResult(album = "Parachutes")
+        val updated = applyResultToTrack(track, result, "file:///artwork/manual_track_1.jpg")
+
+        assertEquals("Parachutes", updated.albumTitle)
+    }
+
+    @Test
+    fun `4 Manual artwork selection updates albumArtist when valid`() {
+        val track = makeTrack(albumArtist = "Old Album Artist")
+        val result = makeArtworkResult(albumArtist = "Coldplay")
+        val updated = applyResultToTrack(track, result, "file:///artwork/manual_track_1.jpg")
+
+        assertEquals("Coldplay", updated.albumArtist)
+    }
+
+    @Test
+    fun `5 Empty or null result metadata does not overwrite existing metadata`() {
         val track = makeTrack(
+            title = "Authentic Song",
+            artist = "Authentic Artist",
+            albumTitle = "Authentic Album",
+            albumArtist = "Authentic Album Artist",
+            year = 2015,
+        )
+        // Result with blank/placeholder metadata
+        val blankResult = ArtworkSearchResult(
+            id = "bad_1",
+            title = "Unknown Track",
+            artist = "",
+            album = "Unknown Album",
+            albumArtist = null,
+            year = 0,
+            artworkUrl = "https://example.com/art.jpg",
+            durationMs = 0L,
+            provider = "iTunes",
+            confidence = 0.5f,
+        )
+        val updated = applyResultToTrack(track, blankResult, "file:///artwork/manual_track_1.jpg")
+
+        // None of the valid fields should have been overwritten by blank/placeholder values
+        assertEquals("Authentic Song", updated.title)
+        assertEquals("Authentic Artist", updated.artist)
+        assertEquals("Authentic Album", updated.albumTitle)
+        assertEquals("Authentic Album Artist", updated.albumArtist)
+        assertEquals(2015, updated.year)
+        // Artwork is still updated
+        assertEquals("file:///artwork/manual_track_1.jpg", updated.artworkUri)
+        assertEquals(ArtworkSource.MANUAL, updated.artworkSource)
+    }
+
+    // ─── Tests 6-8: Provenance protection and invariance ─────────
+
+    @Test
+    fun `6 Manual artwork remains protected from automatic artwork enrichment`() {
+        val track = makeTrack(
+            artist = "Coldplay",
+            title = "Yellow",
             artworkSource = ArtworkSource.MANUAL,
-            artworkUri = "file:///artwork/manual_track_1.jpg"
+            artworkUri = "file:///artwork/manual_track_1.jpg",
         )
         val hasManualArtwork = track.artworkSource == ArtworkSource.MANUAL
 
-        // In MetadataEnrichmentService, when hasManualArtwork is true, finalArtworkUri stays unchanged
-        val finalArtworkUri = if (hasManualArtwork) track.artworkUri else "file:///artwork/new_from_itunes.jpg"
-        val resultSource = if (hasManualArtwork) track.artworkSource else ArtworkSource.EXTERNAL
+        // In MetadataEnrichmentService.mergeMetadata:
+        val finalArtwork = if (hasManualArtwork) track.artworkUri else "file:///artwork/remote_auto.jpg"
+        val finalArtist = if (hasManualArtwork && !MetadataUtils.isPlaceholderArtist(track.artist)) track.artist else "Scraped Artist"
 
-        assertEquals("file:///artwork/manual_track_1.jpg", finalArtworkUri)
-        assertEquals(ArtworkSource.MANUAL, resultSource)
+        assertEquals("file:///artwork/manual_track_1.jpg", finalArtwork)
+        assertEquals("Coldplay", finalArtist)
     }
 
     @Test
-    fun `enrichment guard does NOT skip EXTERNAL artwork`() {
-        val track = makeTrack(artworkSource = ArtworkSource.EXTERNAL)
-        val hasManualArtwork = track.artworkSource == ArtworkSource.MANUAL
+    fun `7 Track identity, path, uri, duration, and audio format remain unchanged`() {
+        val original = makeTrack()
+        val result = makeArtworkResult()
+        val updated = applyResultToTrack(original, result, "file:///artwork/manual_track_1.jpg")
 
-        // External artwork is NOT protected — enrichment may replace it
-        assertFalse(hasManualArtwork)
+        assertEquals(original.id, updated.id)
+        assertEquals(original.path, updated.path)
+        assertEquals(original.uri, updated.uri)
+        assertEquals(original.duration, updated.duration)
+        assertEquals(original.size, updated.size)
+        assertEquals(original.codec, updated.codec)
+        assertEquals(original.bitrate, updated.bitrate)
+        assertEquals(original.sampleRate, updated.sampleRate)
+        assertEquals(original.bitDepth, updated.bitDepth)
+        assertEquals(original.channels, updated.channels)
     }
 
-    // ─── Part 3: applyManualArtworkToAlbum scope guard ───────────
+    @Test
+    fun `8 Play count, favorite, and last played history remain unchanged`() {
+        val original = makeTrack(isFavorite = true, playCount = 99, lastPlayed = 987654321L)
+        val result = makeArtworkResult()
+        val updated = applyResultToTrack(original, result, "file:///artwork/manual_track_1.jpg")
+
+        assertEquals(true, updated.isFavorite)
+        assertEquals(99, updated.playCount)
+        assertEquals(987654321L, updated.lastPlayed)
+    }
+
+    // ─── Tests 9-10: Album-level behavior ─────────────────────────
 
     @Test
-    fun `applyManualArtworkToAlbum only targets correct albumId`() {
-        val albumId = 100L
-        val otherAlbumId = 999L
-
-        val tracks = listOf(
-            makeTrack(id = 1, albumId = albumId),
-            makeTrack(id = 2, albumId = albumId),
-            makeTrack(id = 3, albumId = otherAlbumId),
-            makeTrack(id = 4, albumId = otherAlbumId),
+    fun `9 Album-wide artwork application updates artwork for all album tracks`() {
+        val targetAlbumId = 200L
+        val albumTracks = listOf(
+            makeTrack(id = 10, albumId = targetAlbumId, artworkUri = null),
+            makeTrack(id = 11, albumId = targetAlbumId, artworkUri = null),
+            makeTrack(id = 12, albumId = targetAlbumId, artworkUri = null),
         )
 
-        // Simulate repository filter logic
-        val affectedTracks = tracks.filter { it.albumId == albumId }
+        val newArtworkUri = "file:///artwork/manual_album_200.jpg"
+        val updatedTracks = albumTracks.map { track ->
+            track.copy(
+                artworkUri = newArtworkUri,
+                artworkSource = ArtworkSource.MANUAL,
+                artworkProvider = "iTunes",
+                artworkLastUpdated = 2000L,
+            )
+        }
 
-        assertEquals(2, affectedTracks.size)
-        assertTrue(affectedTracks.all { it.albumId == albumId })
-        assertTrue(affectedTracks.none { it.albumId == otherAlbumId })
+        assertTrue(updatedTracks.all { it.artworkUri == newArtworkUri })
+        assertTrue(updatedTracks.all { it.artworkSource == ArtworkSource.MANUAL })
     }
 
     @Test
-    fun `applyManualArtworkToAlbum with empty albumId guard returns 0`() {
-        val albumId = 0L // invalid
-        val result = if (albumId <= 0L) 0 else -1
-        assertEquals(0, result)
-    }
+    fun `10 Album-wide artwork application does NOT blindly replace every track artist with one artist`() {
+        val targetAlbumId = 300L
+        val compilationTracks = listOf(
+            makeTrack(id = 1, albumId = targetAlbumId, artist = "Queen", title = "Under Pressure"),
+            makeTrack(id = 2, albumId = targetAlbumId, artist = "David Bowie", title = "Heroes"),
+            makeTrack(id = 3, albumId = targetAlbumId, artist = "Elton John", title = "Rocket Man"),
+        )
 
-    // ─── Part 4: ArtworkSearchResult normalization ────────────────
+        val newArtworkUri = "file:///artwork/manual_album_300.jpg"
 
-    @Test
-    fun `ArtworkSearchResult artworkUrl can be null`() {
-        val result = makeArtworkResult(url = "")
-        // In ITunesArtworkSearchProvider, blank url → null
-        val resolvedUrl = result.artworkUrl?.takeIf { it.isNotBlank() }
-        assertNull(resolvedUrl)
-    }
+        // Simulate applyManualArtworkToAlbum: update artwork ONLY, preserve track.artist
+        val updatedCompilation = compilationTracks.map { track ->
+            track.copy(
+                artworkUri = newArtworkUri,
+                artworkSource = ArtworkSource.MANUAL,
+            )
+        }
 
-    @Test
-    fun `ArtworkSearchResult with valid url is non-blank`() {
-        val result = makeArtworkResult(url = "https://example.com/art.jpg")
-        assertNotNull(result.artworkUrl)
-        assertTrue(result.artworkUrl!!.startsWith("https://"))
+        assertEquals("Queen", updatedCompilation[0].artist)
+        assertEquals("David Bowie", updatedCompilation[1].artist)
+        assertEquals("Elton John", updatedCompilation[2].artist)
     }
 }

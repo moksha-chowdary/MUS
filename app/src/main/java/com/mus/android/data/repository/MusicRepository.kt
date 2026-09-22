@@ -283,7 +283,11 @@ class MusicRepository @Inject constructor(
                         metadataLastUpdated = if (existing.metadataLastUpdated > 0) existing.metadataLastUpdated else scannedTrack.metadataLastUpdated,
                         isFavorite = existing.isFavorite,
                         playCount = existing.playCount,
-                        lastPlayed = existing.lastPlayed
+                        lastPlayed = existing.lastPlayed,
+                        artworkSource = existing.artworkSource,
+                        artworkProvider = existing.artworkProvider,
+                        artworkRemoteId = existing.artworkRemoteId,
+                        artworkLastUpdated = existing.artworkLastUpdated,
                     )
                 } else {
                     scannedTrack
@@ -605,12 +609,15 @@ class MusicRepository @Inject constructor(
     // ── Manual Artwork ────────────────────────────────────────
 
     /**
-     * Applies a user-selected artwork result to a single track.
+     * Applies a user-selected artwork result and explicit metadata correction to a single track.
      * Downloads the artwork to persistent storage, writes MANUAL provenance,
-     * and updates only that track's Room row.
+     * updates title/artist/album/albumArtist/year if validly supplied in [result],
+     * and updates the track's Room row.
      *
-     * Does NOT trigger any rescan or metadata enrichment.
-     * Does NOT affect any other tracks.
+     * Invariant technical fields (ID, path, URI, duration, size, format, bitrate, sample rate,
+     * channels, play count, last played, favorite state) are NEVER changed.
+     *
+     * Reconciles Album and Artist entities in Room without breaking album grouping.
      *
      * Returns the updated Track, or null if the track was not found.
      */
@@ -619,6 +626,7 @@ class MusicRepository @Inject constructor(
         artworkUrl: String,
         provider: String,
         remoteId: String?,
+        result: com.mus.android.data.enrichment.provider.ArtworkSearchResult? = null,
     ): Track? = withContext(Dispatchers.IO) {
         val track = trackDao.getTrackById(trackId) ?: return@withContext null
 
@@ -630,19 +638,156 @@ class MusicRepository @Inject constructor(
             forceOverwrite = true,
         ) ?: return@withContext null
 
+        val now = System.currentTimeMillis()
+
+        // Synchronize metadata from selected result only when present and non-placeholder
+        val rawTitle = result?.title?.trim()
+        val finalTitle = if (!rawTitle.isNullOrBlank() && !com.mus.android.data.scanner.MetadataUtils.isPlaceholderTitle(rawTitle)) {
+            rawTitle
+        } else {
+            track.title
+        }
+
+        val rawArtist = result?.artist?.trim()
+        val finalArtist = if (!rawArtist.isNullOrBlank() && !com.mus.android.data.scanner.MetadataUtils.isPlaceholderArtist(rawArtist)) {
+            rawArtist
+        } else {
+            track.artist
+        }
+
+        val rawAlbum = result?.album?.trim()
+        val finalAlbumTitle = if (!rawAlbum.isNullOrBlank() && !com.mus.android.data.scanner.MetadataUtils.isPlaceholderAlbum(rawAlbum)) {
+            rawAlbum
+        } else {
+            track.albumTitle
+        }
+
+        val rawAlbumArtist = result?.albumArtist?.trim()
+        val finalAlbumArtist = if (!rawAlbumArtist.isNullOrBlank() && !com.mus.android.data.scanner.MetadataUtils.isPlaceholderArtist(rawAlbumArtist)) {
+            rawAlbumArtist
+        } else if (rawAlbum != null && !com.mus.android.data.scanner.MetadataUtils.isPlaceholderAlbum(rawAlbum) && finalArtist.isNotBlank()) {
+            finalArtist
+        } else {
+            track.albumArtist
+        }
+
+        val finalYear = if (result != null && result.year > 0) result.year else track.year
+
+        val oldAlbumId = track.albumId
+        val albumMetadataChanged = (finalAlbumTitle != track.albumTitle) || (finalAlbumArtist != track.albumArtist)
+        val finalAlbumId = if (albumMetadataChanged) {
+            val effArtist = finalAlbumArtist.ifBlank { finalArtist }
+            com.mus.android.data.scanner.MetadataUtils.generateCanonicalAlbumId(
+                effArtist,
+                finalAlbumTitle,
+                track.path ?: track.uri
+            )
+        } else {
+            oldAlbumId
+        }
+
         val updated = track.copy(
+            title = finalTitle,
+            artist = finalArtist,
+            albumTitle = finalAlbumTitle,
+            albumArtist = finalAlbumArtist,
+            albumId = finalAlbumId,
+            year = finalYear,
             artworkUri = localUri,
             artworkSource = ArtworkSource.MANUAL,
             artworkProvider = provider,
             artworkRemoteId = remoteId,
-            artworkLastUpdated = System.currentTimeMillis(),
+            artworkLastUpdated = now,
+            metadataStatus = com.mus.android.data.model.MetadataStatus.COMPLETE,
+            metadataConfidence = com.mus.android.data.model.MetadataConfidence.HIGH,
+            metadataLastUpdated = now,
         )
-        trackDao.update(updated)
 
-        // Also update the Album row so the album page reflects the change immediately
-        val album = albumDao.getAlbumById(track.albumId)
-        if (album != null) {
-            albumDao.insertAll(listOf(album.copy(artworkUri = localUri)))
+        database.withTransaction {
+            trackDao.update(updated)
+
+            if (finalAlbumId == oldAlbumId) {
+                // Track stayed in same album: update album artwork & year
+                val album = albumDao.getAlbumById(oldAlbumId)
+                if (album != null) {
+                    albumDao.insertAll(listOf(
+                        album.copy(
+                            artworkUri = localUri,
+                            year = if (album.year == 0 && finalYear > 0) finalYear else album.year
+                        )
+                    ))
+                } else {
+                    albumDao.insertAll(listOf(
+                        com.mus.android.data.model.Album(
+                            id = oldAlbumId,
+                            title = finalAlbumTitle,
+                            artist = finalAlbumArtist.ifBlank { finalArtist },
+                            artworkUri = localUri,
+                            year = finalYear,
+                            trackCount = 1,
+                            totalDuration = updated.duration,
+                        )
+                    ))
+                }
+            } else {
+                // Track album grouping changed: reconcile old and new albums
+                val remainingInOld = trackDao.getAllTracksOnce().filter { it.albumId == oldAlbumId && it.id != trackId }
+                if (remainingInOld.isEmpty()) {
+                    albumDao.deleteAlbumsByIds(listOf(oldAlbumId))
+                } else {
+                    val oldAlbum = albumDao.getAlbumById(oldAlbumId)
+                    if (oldAlbum != null) {
+                        albumDao.insertAll(listOf(
+                            oldAlbum.copy(
+                                trackCount = remainingInOld.size,
+                                totalDuration = remainingInOld.sumOf { it.duration },
+                            )
+                        ))
+                    }
+                }
+
+                val existingNew = albumDao.getAlbumById(finalAlbumId)
+                val allInNew = trackDao.getAllTracksOnce().filter { it.albumId == finalAlbumId || it.id == trackId }
+                if (existingNew != null) {
+                    albumDao.insertAll(listOf(
+                        existingNew.copy(
+                            artworkUri = localUri,
+                            trackCount = allInNew.size,
+                            totalDuration = allInNew.sumOf { it.duration },
+                            year = if (existingNew.year == 0 && finalYear > 0) finalYear else existingNew.year,
+                        )
+                    ))
+                } else {
+                    albumDao.insertAll(listOf(
+                        com.mus.android.data.model.Album(
+                            id = finalAlbumId,
+                            title = finalAlbumTitle,
+                            artist = finalAlbumArtist.ifBlank { finalArtist },
+                            artworkUri = localUri,
+                            year = finalYear,
+                            trackCount = allInNew.size,
+                            totalDuration = allInNew.sumOf { it.duration },
+                        )
+                    ))
+                }
+            }
+
+            // Update Artist table if valid
+            if (finalArtist.isNotBlank() && !com.mus.android.data.scanner.MetadataUtils.isPlaceholderArtist(finalArtist)) {
+                val artistId = com.mus.android.data.scanner.MetadataUtils.generateArtistId(finalArtist)
+                val existingArtist = artistDao.getArtistById(artistId)
+                if (existingArtist == null) {
+                    artistDao.insertAll(listOf(
+                        com.mus.android.data.model.Artist(
+                            id = artistId,
+                            name = finalArtist,
+                            artworkUri = null,
+                            albumCount = 1,
+                            trackCount = 1,
+                        )
+                    ))
+                }
+            }
         }
         updated
     }
@@ -654,6 +799,9 @@ class MusicRepository @Inject constructor(
      *
      * Downloads a single copy of the artwork and shares the local URI across all affected tracks.
      *
+     * IMPORTANT: Preserves each track's individual artist! Does NOT overwrite track.artist.
+     * Updates album-level metadata on the Album entity.
+     *
      * Returns the number of tracks updated.
      */
     suspend fun applyManualArtworkToAlbum(
@@ -661,6 +809,7 @@ class MusicRepository @Inject constructor(
         artworkUrl: String,
         provider: String,
         remoteId: String?,
+        result: com.mus.android.data.enrichment.provider.ArtworkSearchResult? = null,
     ): Int = withContext(Dispatchers.IO) {
         if (albumId <= 0L) return@withContext 0
 
@@ -679,6 +828,7 @@ class MusicRepository @Inject constructor(
         var updatedCount = 0
         database.withTransaction {
             for (track in albumTracks) {
+                // DO NOT overwrite track.artist! Preserve individual artist per requirements.
                 val updated = track.copy(
                     artworkUri = localUri,
                     artworkSource = ArtworkSource.MANUAL,
@@ -693,7 +843,8 @@ class MusicRepository @Inject constructor(
             // Update Album entity
             val album = albumDao.getAlbumById(albumId)
             if (album != null) {
-                albumDao.insertAll(listOf(album.copy(artworkUri = localUri)))
+                val albumYear = if (album.year == 0 && result != null && result.year > 0) result.year else album.year
+                albumDao.insertAll(listOf(album.copy(artworkUri = localUri, year = albumYear)))
             }
         }
         updatedCount

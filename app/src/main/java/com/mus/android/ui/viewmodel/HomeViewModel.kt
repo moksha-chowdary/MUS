@@ -154,8 +154,15 @@ class HomeViewModel @Inject constructor(
     init {
         viewModelScope.launch {
             tracks.collect { allTracks ->
-                if (allTracks.isNotEmpty() && _quickPicks.value.isEmpty()) {
-                    generateQuickPicks(allTracks)
+                if (allTracks.isNotEmpty()) {
+                    if (_quickPicks.value.isEmpty()) {
+                        generateQuickPicks(allTracks)
+                    } else {
+                        // Reflect updated track metadata & manual artwork from Room into existing quickPicks
+                        _quickPicks.value = _quickPicks.value.map { qp ->
+                            allTracks.find { it.id == qp.id } ?: qp
+                        }
+                    }
                 }
             }
         }

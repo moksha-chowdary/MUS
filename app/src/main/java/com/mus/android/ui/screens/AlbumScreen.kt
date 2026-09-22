@@ -239,14 +239,16 @@ fun AlbumScreen(
     }
 
     if (showArtworkPicker && representativeTrack != null) {
-        ArtworkSearchSheet(
-            track = representativeTrack,
-            fromAlbum = true,
-            onBack = { showArtworkPicker = false },
-            onApplied = {
-                showArtworkPicker = false
-                viewModel.refreshAlbum()
-            },
-        )
+        key(album?.id ?: representativeTrack.albumId) {
+            ArtworkSearchSheet(
+                track = representativeTrack,
+                fromAlbum = true,
+                onBack = { showArtworkPicker = false },
+                onApplied = {
+                    showArtworkPicker = false
+                    viewModel.refreshAlbum()
+                },
+            )
+        }
     }
 }

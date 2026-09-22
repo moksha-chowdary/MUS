@@ -6,7 +6,10 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.PlaylistAdd
 import androidx.compose.material.icons.rounded.Clear
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material3.*
@@ -17,8 +20,10 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.mus.android.data.enrichment.provider.OnlineSearchResult
 import com.mus.android.data.model.Track
@@ -54,6 +59,7 @@ fun SearchScreen(
     val onlineResults by discoveryViewModel.onlineResults.collectAsState()
     val isSearchingOnline by discoveryViewModel.isSearching.collectAsState()
     val addToQueueResult by discoveryViewModel.addToQueueResult.collectAsState()
+    val pendingDownloadCount by discoveryViewModel.pendingDownloadCount.collectAsState()
 
     var activeTab by remember { mutableStateOf(SearchTab.LOCAL) }
     var selectedFilter by remember { mutableStateOf("All") }
@@ -148,27 +154,71 @@ fun SearchScreen(
                 }
             }
 
-            // LOCAL / ONLINE tab row
+            // LOCAL / ONLINE tab row + To Download affordance
             Spacer(Modifier.height(Spacing.sm))
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = Spacing.base),
-                horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                SearchTabChip(
-                    label = "Your Library",
-                    selected = activeTab == SearchTab.LOCAL,
-                    onClick = { activeTab = SearchTab.LOCAL },
-                )
-                SearchTabChip(
-                    label = "Online",
-                    selected = activeTab == SearchTab.ONLINE,
-                    onClick = {
-                        activeTab = SearchTab.ONLINE
-                        if (query.isNotBlank()) discoveryViewModel.searchOnline(query)
-                    },
-                )
+                Row(horizontalArrangement = Arrangement.spacedBy(Spacing.sm)) {
+                    SearchTabChip(
+                        label = "Your Library",
+                        selected = activeTab == SearchTab.LOCAL,
+                        onClick = { activeTab = SearchTab.LOCAL },
+                    )
+                    SearchTabChip(
+                        label = "Online",
+                        selected = activeTab == SearchTab.ONLINE,
+                        onClick = {
+                            activeTab = SearchTab.ONLINE
+                            if (query.isNotBlank()) discoveryViewModel.searchOnline(query)
+                        },
+                    )
+                }
+
+                // Compact "To Download" affordance near search tabs
+                Surface(
+                    onClick = onDownloadQueueClick,
+                    shape = RoundedCornerShape(20.dp),
+                    color = if (pendingDownloadCount > 0) MusColors.SurfaceElevated else MusColors.SurfaceVariant,
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Icon(
+                            Icons.AutoMirrored.Rounded.PlaylistAdd,
+                            contentDescription = "To Download",
+                            tint = if (pendingDownloadCount > 0) MusColors.OnBackground else MusColors.OnBackgroundTertiary,
+                            modifier = Modifier.size(15.dp),
+                        )
+                        Text(
+                            text = "To Download",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (pendingDownloadCount > 0) MusColors.OnBackground else MusColors.OnBackgroundSecondary,
+                        )
+                        if (pendingDownloadCount > 0) {
+                            Surface(
+                                shape = CircleShape,
+                                color = MusColors.OnBackground,
+                            ) {
+                                Text(
+                                    text = "$pendingDownloadCount",
+                                    style = MaterialTheme.typography.labelSmall.copy(
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold,
+                                    ),
+                                    color = MusColors.Background,
+                                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp),
+                                )
+                            }
+                        }
+                    }
+                }
             }
 
             // Filter chips — only on LOCAL tab
@@ -215,6 +265,7 @@ fun SearchScreen(
                     query = query,
                     results = onlineResults,
                     isSearching = isSearchingOnline,
+                    pendingDownloadCount = pendingDownloadCount,
                     onResultClick = { selectedOnlineResult = it },
                     onDownloadQueueClick = onDownloadQueueClick,
                 )
@@ -355,18 +406,47 @@ private fun OnlineSearchContent(
     query: String,
     results: List<OnlineSearchResult>,
     isSearching: Boolean,
+    pendingDownloadCount: Int,
     onResultClick: (OnlineSearchResult) -> Unit,
     onDownloadQueueClick: () -> Unit,
 ) {
     when {
         query.isEmpty() -> {
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text(
-                    "Search for songs, artists, or albums online",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MusColors.OnBackgroundTertiary,
-                    textAlign = TextAlign.Center,
-                )
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(Spacing.md),
+                ) {
+                    Icon(
+                        Icons.Rounded.Search,
+                        contentDescription = null,
+                        tint = MusColors.OnBackgroundTertiary,
+                        modifier = Modifier.size(48.dp),
+                    )
+                    Text(
+                        "Search for songs, artists, or albums online",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MusColors.OnBackgroundTertiary,
+                        textAlign = TextAlign.Center,
+                    )
+                    OutlinedButton(
+                        onClick = onDownloadQueueClick,
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = MusColors.OnBackground),
+                        shape = RoundedCornerShape(8.dp),
+                    ) {
+                        Icon(
+                            Icons.AutoMirrored.Rounded.PlaylistAdd,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                        )
+                        Spacer(Modifier.width(Spacing.xs))
+                        Text(
+                            if (pendingDownloadCount > 0) "Open \"To Download\" ($pendingDownloadCount)"
+                            else "Open \"To Download\" Planning List",
+                            style = MaterialTheme.typography.labelMedium,
+                        )
+                    }
+                }
             }
         }
         isSearching -> {
@@ -379,12 +459,34 @@ private fun OnlineSearchContent(
         }
         results.isEmpty() -> {
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text(
-                    "No online results for \"$query\"",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MusColors.OnBackgroundTertiary,
-                    textAlign = TextAlign.Center,
-                )
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(Spacing.md),
+                ) {
+                    Text(
+                        "No online results for \"$query\"",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MusColors.OnBackgroundTertiary,
+                        textAlign = TextAlign.Center,
+                    )
+                    OutlinedButton(
+                        onClick = onDownloadQueueClick,
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = MusColors.OnBackground),
+                        shape = RoundedCornerShape(8.dp),
+                    ) {
+                        Icon(
+                            Icons.AutoMirrored.Rounded.PlaylistAdd,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                        )
+                        Spacer(Modifier.width(Spacing.xs))
+                        Text(
+                            if (pendingDownloadCount > 0) "Open \"To Download\" ($pendingDownloadCount)"
+                            else "Open \"To Download\" Planning List",
+                            style = MaterialTheme.typography.labelMedium,
+                        )
+                    }
+                }
             }
         }
         else -> {
@@ -399,8 +501,15 @@ private fun OnlineSearchContent(
                         SectionHeaderInline("Online Results")
                         Spacer(Modifier.weight(1f))
                         TextButton(onClick = onDownloadQueueClick) {
+                            Icon(
+                                Icons.AutoMirrored.Rounded.PlaylistAdd,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp),
+                                tint = MusColors.OnBackgroundSecondary,
+                            )
+                            Spacer(Modifier.width(4.dp))
                             Text(
-                                "MUS To Download",
+                                if (pendingDownloadCount > 0) "To Download ($pendingDownloadCount)" else "To Download",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MusColors.OnBackgroundSecondary,
                             )

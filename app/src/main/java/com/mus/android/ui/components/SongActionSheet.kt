@@ -403,11 +403,20 @@ fun SongMenuContainer(
     var activeTrack by remember { mutableStateOf<Track?>(null) }
     var showActionSheet by remember { mutableStateOf(false) }
     var showArtworkSearch by remember { mutableStateOf(false) }
+    var showDetailsDialog by remember { mutableStateOf(false) }
+    var showAddToPlaylistSheet by remember { mutableStateOf(false) }
+    var showMoveToPlaylistSheet by remember { mutableStateOf(false) }
+    var showDeleteConfirmation by remember { mutableStateOf(false) }
+    var showRemoveFromPlaylistConfirmation by remember { mutableStateOf(false) }
+    var existingPlaylistIdsForTrack by remember { mutableStateOf<Set<Long>>(emptySet()) }
 
     LaunchedEffect(selectedTrack) {
         if (selectedTrack != null) {
             activeTrack = selectedTrack
             showActionSheet = true
+        } else if (!showArtworkSearch && !showAddToPlaylistSheet && !showMoveToPlaylistSheet && !showDetailsDialog && !showDeleteConfirmation && !showRemoveFromPlaylistConfirmation) {
+            activeTrack = null
+            showActionSheet = false
         }
     }
 
@@ -415,13 +424,6 @@ fun SongMenuContainer(
 
     val context = LocalContext.current
     val playlists by viewModel.playlists.collectAsState()
-
-    var showDetailsDialog by remember { mutableStateOf(false) }
-    var showAddToPlaylistSheet by remember { mutableStateOf(false) }
-    var showMoveToPlaylistSheet by remember { mutableStateOf(false) }
-    var showDeleteConfirmation by remember { mutableStateOf(false) }
-    var showRemoveFromPlaylistConfirmation by remember { mutableStateOf(false) }
-    var existingPlaylistIdsForTrack by remember { mutableStateOf<Set<Long>>(emptySet()) }
 
     LaunchedEffect(currentTrack.id) {
         existingPlaylistIdsForTrack = viewModel.getPlaylistIdsForTrack(currentTrack.id).toSet()
@@ -445,7 +447,7 @@ fun SongMenuContainer(
             playlistId = playlistId,
             onDismiss = {
                 showActionSheet = false
-                if (!showAddToPlaylistSheet && !showMoveToPlaylistSheet && !showDetailsDialog && !showDeleteConfirmation && !showRemoveFromPlaylistConfirmation) {
+                if (!showArtworkSearch && !showAddToPlaylistSheet && !showMoveToPlaylistSheet && !showDetailsDialog && !showDeleteConfirmation && !showRemoveFromPlaylistConfirmation) {
                     closeAll()
                 }
             },
@@ -676,23 +678,27 @@ fun SongMenuContainer(
 
     // Artwork search — full screen overlay
     if (showArtworkSearch) {
-        ArtworkSearchSheet(
-            track = currentTrack,
-            fromAlbum = false,
-            onBack = {
-                showArtworkSearch = false
-                onDismissMenu()
-            },
-            onApplied = {
-                showArtworkSearch = false
-                android.widget.Toast.makeText(
-                    context,
-                    "Artwork updated",
-                    android.widget.Toast.LENGTH_SHORT
-                ).show()
-                onDismissMenu()
-            },
-        )
+        key(currentTrack.id) {
+            ArtworkSearchSheet(
+                track = currentTrack,
+                fromAlbum = false,
+                onBack = {
+                    showArtworkSearch = false
+                    activeTrack = null
+                    onDismissMenu()
+                },
+                onApplied = {
+                    showArtworkSearch = false
+                    activeTrack = null
+                    android.widget.Toast.makeText(
+                        context,
+                        "Artwork updated",
+                        android.widget.Toast.LENGTH_SHORT
+                    ).show()
+                    onDismissMenu()
+                },
+            )
+        }
     }
 }
 

@@ -17,6 +17,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -60,15 +61,29 @@ fun ArtworkSearchSheet(
     var showAlbumConfirm by remember { mutableStateOf(false) }
     var pendingResult by remember { mutableStateOf<ArtworkSearchResult?>(null) }
 
-    LaunchedEffect(track.id) {
-        viewModel.initQuery(track)
+    DisposableEffect(track.id, fromAlbum) {
+        onDispose {
+            viewModel.resetSession()
+        }
+    }
+
+    LaunchedEffect(track.id, fromAlbum) {
+        if (fromAlbum) {
+            viewModel.startSessionForAlbum(
+                albumId = track.albumId,
+                albumTitle = track.albumTitle,
+                artist = track.albumArtist.ifBlank { track.artist },
+            )
+        } else {
+            viewModel.startSessionForTrack(track)
+        }
     }
 
     // Observe apply completion
     LaunchedEffect(applyState) {
         if (applyState is ArtworkApplyState.Success) {
             onApplied()
-            viewModel.resetApplyState()
+            viewModel.resetSession()
         }
     }
 
@@ -85,7 +100,10 @@ fun ArtworkSearchSheet(
                 .padding(horizontal = Spacing.sm, vertical = Spacing.sm),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            IconButton(onClick = onBack) {
+            IconButton(onClick = {
+                viewModel.resetSession()
+                onBack()
+            }) {
                 Icon(
                     Icons.AutoMirrored.Rounded.ArrowBack,
                     contentDescription = "Back",
@@ -245,8 +263,12 @@ fun ArtworkSearchSheet(
             dismissButton = {
                 TextButton(onClick = {
                     // Also offer single-track option
+                    val chosen = pendingResult
                     showAlbumConfirm = false
-                    viewModel.applyToTrack(track.id)
+                    if (chosen != null) {
+                        viewModel.selectResult(chosen)
+                        viewModel.applyToTrack(track.id)
+                    }
                 }) {
                     Text("This song only", color = MusColors.OnBackgroundSecondary)
                 }
@@ -337,7 +359,7 @@ private fun ArtworkConfirmDialog(
 ) {
     AlertDialog(
         onDismissRequest = onCancel,
-        title = { Text("Use this artwork?", color = MusColors.OnBackground) },
+        title = { Text("Use this artwork & metadata?", color = MusColors.OnBackground) },
         text = {
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
@@ -345,7 +367,7 @@ private fun ArtworkConfirmDialog(
             ) {
                 Box(
                     modifier = Modifier
-                        .size(200.dp)
+                        .size(180.dp)
                         .clip(RoundedCornerShape(12.dp))
                         .background(MusColors.SurfaceVariant),
                     contentAlignment = Alignment.Center,
@@ -366,10 +388,45 @@ private fun ArtworkConfirmDialog(
                     }
                 }
                 Spacer(Modifier.height(Spacing.md))
-                Text(result.title, style = MaterialTheme.typography.titleMedium, color = MusColors.OnBackground)
-                Text(result.artist, style = MaterialTheme.typography.bodySmall, color = MusColors.OnBackgroundSecondary)
+                Text(
+                    text = result.title,
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MusColors.OnBackground,
+                    textAlign = TextAlign.Center,
+                )
+                Spacer(Modifier.height(Spacing.xxs))
+                Text(
+                    text = result.artist,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MusColors.OnBackgroundSecondary,
+                    textAlign = TextAlign.Center,
+                )
                 if (!result.album.isNullOrBlank()) {
-                    Text(result.album, style = MaterialTheme.typography.bodySmall, color = MusColors.OnBackgroundTertiary)
+                    Spacer(Modifier.height(Spacing.xxs))
+                    Text(
+                        text = result.album,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MusColors.OnBackgroundTertiary,
+                        textAlign = TextAlign.Center,
+                    )
+                }
+                Spacer(Modifier.height(Spacing.xs))
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    if (result.year > 0) {
+                        Text(
+                            text = "${result.year}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MusColors.OnBackgroundTertiary,
+                        )
+                    }
+                    Text(
+                        text = "Source: ${result.provider}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MusColors.OnBackgroundTertiary,
+                    )
                 }
             }
         },

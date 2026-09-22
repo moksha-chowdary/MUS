@@ -67,6 +67,7 @@ fun MusNavHost(
                 onArtistClick = { navController.navigate(MusRoute.Artist.create(it)) },
                 onPlaylistClick = { navController.navigate(MusRoute.Playlist.create(it)) },
                 onTrackClick = onTrackClick,
+                onDownloadQueueClick = { navController.navigate(MusRoute.DownloadQueue.route) },
             )
         }
 

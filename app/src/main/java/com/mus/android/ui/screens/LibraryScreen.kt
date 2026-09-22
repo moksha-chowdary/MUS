@@ -11,6 +11,7 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.PlaylistAdd
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Album
 import androidx.compose.material.icons.rounded.DeleteOutline
@@ -45,12 +46,14 @@ fun LibraryScreen(
     onArtistClick: (Long) -> Unit,
     onPlaylistClick: (Long) -> Unit,
     onTrackClick: (Track, List<Track>) -> Unit,
+    onDownloadQueueClick: () -> Unit = {},
     viewModel: LibraryViewModel = hiltViewModel(),
 ) {
     val albums by viewModel.albums.collectAsState()
     val artists by viewModel.artists.collectAsState()
     val playlists by viewModel.playlists.collectAsState()
     val favorites by viewModel.favorites.collectAsState()
+    val pendingDownloadCount by viewModel.pendingDownloadCount.collectAsState()
     val allTracks by viewModel.allTracks.collectAsState()
     val filteredTracks by viewModel.filteredTracks.collectAsState()
     val selectedLanguageFilter by viewModel.selectedLanguageFilter.collectAsState()
@@ -176,6 +179,54 @@ fun LibraryScreen(
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MusColors.OnBackgroundSecondary,
                                 )
+                            }
+                        }
+                    }
+
+                    // MUS — To Download shortcut
+                    item {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { onDownloadQueueClick() }
+                                .padding(horizontal = Spacing.base, vertical = Spacing.md),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Icon(
+                                Icons.AutoMirrored.Rounded.PlaylistAdd,
+                                contentDescription = null,
+                                tint = MusColors.OnBackground,
+                                modifier = Modifier
+                                    .size(48.dp)
+                                    .background(MusColors.SurfaceVariant, RoundedCornerShape(6.dp))
+                                    .padding(12.dp),
+                            )
+                            Spacer(Modifier.width(Spacing.md))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    "MUS — To Download",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    color = MusColors.OnBackground,
+                                )
+                                Text(
+                                    if (pendingDownloadCount > 0) "$pendingDownloadCount songs to discover"
+                                    else "Download planning list",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MusColors.OnBackgroundSecondary,
+                                )
+                            }
+                            if (pendingDownloadCount > 0) {
+                                Surface(
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = MusColors.OnBackground.copy(alpha = 0.12f),
+                                ) {
+                                    Text(
+                                        text = "$pendingDownloadCount",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MusColors.OnBackground,
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                                    )
+                                }
                             }
                         }
                     }

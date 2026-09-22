@@ -51,6 +51,9 @@ class LibraryViewModel @Inject constructor(
     val favorites: StateFlow<List<Track>> = repository.getFavorites()
         .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
+    val pendingDownloadCount: StateFlow<Int> = repository.observePendingDownloadCount()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
+
     fun setLanguageFilter(language: String) {
         _selectedLanguageFilter.value = language
     }

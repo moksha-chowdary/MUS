@@ -38,6 +38,9 @@ class DiscoveryViewModel @Inject constructor(
     val downloadQueue: StateFlow<List<DownloadQueueItem>> = repository.getDownloadQueue()
         .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
+    val pendingDownloadCount: StateFlow<Int> = repository.observePendingDownloadCount()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
+
     private val _addToQueueResult = MutableStateFlow<String?>(null)
     val addToQueueResult: StateFlow<String?> = _addToQueueResult.asStateFlow()
 

@@ -522,13 +522,17 @@ class MetadataEnrichmentService @Inject constructor(
         confidence: String,
         forceRefresh: Boolean = false,
     ): Track {
-        val finalTitle = remote.title
-        val finalArtist = remote.artist
-        val finalAlbumTitle = remote.albumTitle ?: local.albumTitle
-        val finalAlbumArtist = remote.albumArtist ?: finalArtist
+        val hasManualArtwork = local.artworkSource == com.mus.android.data.model.ArtworkSource.MANUAL
+
+        // If the track has MANUAL provenance, user's explicit metadata choices are authoritative:
+        // do not silently revert title/artist/album if local already has valid, non-placeholder values.
+        val finalTitle = if (hasManualArtwork && !MetadataUtils.isPlaceholderTitle(local.title)) local.title else remote.title
+        val finalArtist = if (hasManualArtwork && !MetadataUtils.isPlaceholderArtist(local.artist)) local.artist else remote.artist
+        val finalAlbumTitle = if (hasManualArtwork && !MetadataUtils.isPlaceholderAlbum(local.albumTitle)) local.albumTitle else (remote.albumTitle ?: local.albumTitle)
+        val finalAlbumArtist = if (hasManualArtwork && !MetadataUtils.isPlaceholderArtist(local.albumArtist)) local.albumArtist else (remote.albumArtist ?: finalArtist)
         val finalTrackNumber = if (remote.trackNumber > 0) remote.trackNumber else local.trackNumber
         val finalDiscNumber = if (remote.discNumber > 1) remote.discNumber else local.discNumber
-        val finalYear = if (remote.year > 0) remote.year else local.year
+        val finalYear = if (hasManualArtwork && local.year > 0) local.year else if (remote.year > 0) remote.year else local.year
         val finalGenre = if (!remote.genre.isNullOrBlank()) remote.genre else local.genre
         val finalComposer = if (!remote.composer.isNullOrBlank()) remote.composer else local.composer
 
@@ -539,7 +543,6 @@ class MetadataEnrichmentService @Inject constructor(
         // CRITICAL: MANUAL artwork provenance is respected unconditionally — user selection wins.
         var finalArtworkUri = local.artworkUri
         var artworkSavedPath: String? = null
-        val hasManualArtwork = local.artworkSource == com.mus.android.data.model.ArtworkSource.MANUAL
 
         if (hasManualArtwork) {
             // Preserve the user's explicitly chosen artwork; only log for diagnostics.
