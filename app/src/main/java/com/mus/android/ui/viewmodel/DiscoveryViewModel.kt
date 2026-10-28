@@ -2,11 +2,16 @@ package com.mus.android.ui.viewmodel
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.mus.android.data.db.DownloadedTrackDao
 import com.mus.android.data.download.TrackDownloadManager
 import com.mus.android.data.enrichment.provider.OnlineMusicSearchProvider
 import com.mus.android.data.enrichment.provider.OnlineSearchResult
 import com.mus.android.data.model.DownloadQueueItem
 import com.mus.android.data.model.DownloadStatus
+import com.mus.android.data.model.Playlist
+import com.mus.android.data.model.Track
+import com.mus.android.data.music.HomePage
+import com.mus.android.data.music.HomeShelf
 import com.mus.android.data.music.InnerTubeMusicApi
 import com.mus.android.data.music.YouTubeMusicTrack
 import com.mus.android.data.music.YouTubePlaylistSummary
@@ -21,8 +26,12 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
 
@@ -40,6 +49,7 @@ class DiscoveryViewModel @Inject constructor(
     private val downloadManager: TrackDownloadManager,
     private val innerTube: InnerTubeMusicApi,
     private val ytAuth: YtMusicAuthManager,
+    private val downloadedTrackDao: DownloadedTrackDao,
 ) : ViewModel() {
 
     private val _query = MutableStateFlow("")
@@ -59,6 +69,17 @@ class DiscoveryViewModel @Inject constructor(
 
     /** Live progress from the download pipeline (keyed by trackKey). */
     val downloadProgress = downloadManager.downloads
+
+    /** Set of trackKeys already sitting in the local download index (drives the
+     *  "Downloaded" badge on online search rows). */
+    val downloadedKeys: StateFlow<Set<String>> = downloadedTrackDao.getAll()
+        .map { rows ->
+            rows.mapTo(HashSet(rows.size)) { TrackDownloadManager.makeDownloadKey(it.title, it.artist) }
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptySet())
+
+    fun isDownloaded(result: OnlineSearchResult): Boolean =
+        downloadedKeys.value.contains(TrackDownloadManager.makeDownloadKey(result.title, result.artist))
 
     private val _addToQueueResult = MutableStateFlow<String?>(null)
     val addToQueueResult: StateFlow<String?> = _addToQueueResult.asStateFlow()
@@ -260,5 +281,179 @@ class DiscoveryViewModel @Inject constructor(
 
     fun clearAddToQueueResult() {
         _addToQueueResult.value = null
+    }
+
+    // ── YouTube Music home feed (primary catalogue) ──────────────────────
+
+    /** User-created playlists, surfaced as "collections" for downloaded songs. */
+    val collections: StateFlow<List<Playlist>> = repository.getAllPlaylists()
+        .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+
+    private val _homeShelves = MutableStateFlow<List<HomeShelf>>(emptyList())
+    val homeShelves: StateFlow<List<HomeShelf>> = _homeShelves.asStateFlow()
+
+    private val _homeLoading = MutableStateFlow(false)
+    val homeLoading: StateFlow<Boolean> = _homeLoading.asStateFlow()
+
+    private var homeContinuation: String? = null
+    private var homeLoadAttempted = false
+
+    /** Fetches the YT Music catalogue home feed. Works signed-out too (public InnerTube browse). */
+    fun loadHomeFeedIfEmpty(force: Boolean = false) {
+        if (!force && (homeLoadAttempted || _homeShelves.value.isNotEmpty())) return
+        homeLoadAttempted = true
+        _homeLoading.value = true
+        viewModelScope.launch {
+            try {
+                val page = withContext(Dispatchers.IO) { innerTube.fetchHomePage() }
+                homeContinuation = page.continuationToken
+                _homeShelves.value = page.shelves
+            } catch (_: Exception) {
+                // catalogue is best-effort; local shelves still render
+            } finally {
+                _homeLoading.value = false
+            }
+        }
+    }
+
+    /** Appends the next page of catalogue shelves (paged LazyColumn calls this on end-reached). */
+    fun loadMoreHome() {
+        val token = homeContinuation ?: return
+        if (_homeLoading.value) return
+        homeContinuation = null
+        _homeLoading.value = true
+        viewModelScope.launch {
+            try {
+                val page = withContext(Dispatchers.IO) { innerTube.fetchHomeContinuation(token) }
+                homeContinuation = page.continuationToken
+                _homeShelves.value = (_homeShelves.value + page.shelves).distinctBy { it.title }
+            } catch (_: Exception) {
+            } finally {
+                _homeLoading.value = false
+            }
+        }
+    }
+
+    /** Streams a catalogue song straight from the YT Music home feed. */
+    fun playCatalogTrack(track: YouTubeMusicTrack) {
+        val result = track.toOnlineResult()
+        playbackManager.playOnline(result, listOf(result))
+    }
+
+    /** Public conversion for catalogue cards (Home shelves → OnlineResultOverlay). */
+    fun asOnlineResult(track: YouTubeMusicTrack): OnlineSearchResult = track.toOnlineResult()
+
+    /** Downloads a catalogue song straight from the YT Music home feed. */
+    fun downloadCatalogTrack(track: YouTubeMusicTrack) {
+        downloadOnline(track.toOnlineResult())
+    }
+
+    // ── Collections (user playlists as named albums for downloaded songs) ─
+
+    /**
+     * Adds a downloaded song (matched by trackKey) to a collection playlist.
+     * If the song is still downloading or not yet scanned into the library, the
+     * request is parked and resolved automatically after the post-download rescan.
+     */
+    fun addToCollection(trackKey: String, playlistId: Long) {
+        viewModelScope.launch { resolveCollectionAdd(trackKey, playlistId) }
+    }
+
+    /** Creates a new collection and adds the song to it (Telugu / Hindi / …). */
+    fun createCollectionAndAdd(collectionName: String, trackKey: String) {
+        viewModelScope.launch {
+            try {
+                val id = repository.createPlaylist(collectionName.trim())
+                resolveCollectionAdd(trackKey, id)
+            } catch (_: Exception) {
+                _addToQueueResult.value = "Couldn't create collection"
+            }
+        }
+    }
+
+    private suspend fun resolveCollectionAdd(trackKey: String, playlistId: Long) {
+        val downloaded = withContext(Dispatchers.IO) { downloadedTrackDao.findByTrackKey(trackKey) }
+        val track = downloaded?.let { findLocalTrackFor(it.filePath, it.title, it.artist) }
+        if (track != null) {
+            val ok = withContext(Dispatchers.IO) { repository.addTrackToPlaylist(playlistId, track.id) }
+            val name = withContext(Dispatchers.IO) { repository.getPlaylistById(playlistId)?.name } ?: "collection"
+            _addToQueueResult.value = if (ok) "Added to $name" else "Already in $name"
+        } else {
+            // Not in the library yet — queue it; the post-download rescan will resolve it.
+            pendingCollectionAdds[trackKey] = playlistId
+            _addToQueueResult.value = "Will be added to collection once downloaded"
+        }
+    }
+
+    private suspend fun findLocalTrackFor(filePath: String?, title: String, artist: String): Track? {
+        val tracks = withContext(Dispatchers.IO) { repository.getAllTracks().first() }
+        val normTitle = title.trim().lowercase()
+        val normArtist = artist.trim().lowercase()
+        filePath?.let { path ->
+            val normalizedPath = path.trim().lowercase()
+            tracks.firstOrNull { it.path?.trim()?.lowercase() == normalizedPath }?.let { return it }
+            val fileName = normalizedPath.substringAfterLast('/')
+            if (fileName.isNotBlank()) {
+                tracks.firstOrNull { it.path?.trim()?.lowercase()?.endsWith(fileName) == true }?.let { return it }
+            }
+        }
+        tracks.firstOrNull {
+            it.title.trim().lowercase() == normTitle && it.artist.trim().lowercase() == normArtist
+        }?.let { return it }
+        return tracks.firstOrNull {
+            it.title.trim().lowercase() == normTitle && it.artist.trim().lowercase().contains(normArtist)
+        }
+    }
+
+    // ── Post-download auto-rescan + parked collection adds ───────────────
+
+    private val pendingCollectionAdds = HashMap<String, Long>()
+    private val collectionMutex = Mutex()
+    private val rescanMutex = Mutex()
+    private var finishedKeysSeen = HashSet<String>()
+    private var rescanJob: Job? = null
+
+    init {
+        // When a download finishes: schedule one debounced library rescan so the file
+        // appears in the local library immediately, then resolve parked collection adds.
+        viewModelScope.launch {
+            downloadManager.downloads.collect { progress ->
+                val newlyFinished = progress.values.filter { it.isFinished && it.error == null }
+                    .map { it.key }
+                    .filter { finishedKeysSeen.add(it) }
+                if (newlyFinished.isEmpty()) return@collect
+                schedulePostDownloadRescan()
+            }
+        }
+    }
+
+    private fun schedulePostDownloadRescan() {
+        rescanJob?.cancel()
+        rescanJob = viewModelScope.launch {
+            delay(2500) // let parallel downloads in the same batch finish too
+            if (rescanMutex.isLocked) return@launch
+            rescanMutex.withLock {
+                try {
+                    val customUri = repository.getCustomMuzicUri()?.let { android.net.Uri.parse(it) }
+                    withContext(Dispatchers.IO) { repository.scanDevice(customUri) }
+                } catch (_: Exception) {
+                }
+                // Resolve parked "add to collection" requests now that the library is fresh.
+                val pending = collectionMutex.withLock { HashMap(pendingCollectionAdds) }
+                pending.forEach { (trackKey, playlistId) ->
+                    val downloaded = withContext(Dispatchers.IO) { downloadedTrackDao.findByTrackKey(trackKey) }
+                    val track = downloaded?.let { findLocalTrackFor(it.filePath, it.title, it.artist) }
+                    if (track != null) {
+                        try {
+                            withContext(Dispatchers.IO) { repository.addTrackToPlaylist(playlistId, track.id) }
+                            val name = withContext(Dispatchers.IO) { repository.getPlaylistById(playlistId)?.name }
+                            _addToQueueResult.value = "Added to ${name ?: "collection"}"
+                        } catch (_: Exception) {
+                        }
+                        collectionMutex.withLock { pendingCollectionAdds.remove(trackKey) }
+                    }
+                }
+            }
+        }
     }
 }

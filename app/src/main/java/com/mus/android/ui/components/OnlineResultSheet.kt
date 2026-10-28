@@ -34,6 +34,7 @@ import com.mus.android.ui.theme.Spacing
  *   - Play now (streams via the InnerTube resolver)
  *   - Add to queue
  *   - Download audio (remux + tagging + trackKey index)
+ *   - Add to collection (file the song under Telugu / Hindi / any named collection)
  *   - Add to MUS — To Download (planning list)
  *   - Open Source (opens official URL in browser)
  */
@@ -47,6 +48,8 @@ fun OnlineResultSheet(
     onAddToQueue: (() -> Unit)? = null,
     onDownload: (() -> Unit)? = null,
     downloadState: String? = null,
+    isDownloaded: Boolean = false,
+    onAddToCollection: (() -> Unit)? = null,
     youTubeOAuthConfigured: Boolean = false,
     onAddToYouTubePlaylist: (() -> Unit)? = null,
 ) {
@@ -169,17 +172,30 @@ fun OnlineResultSheet(
                 OnlineResultAction(
                     icon = Icons.Rounded.Download,
                     title = "Download audio",
-                    subtitle = when (downloadState) {
-                        "DOWNLOADING" -> "Downloading…"
-                        "DONE" -> "Downloaded — check Muzic"
-                        else -> "Tagged file into Muzic (remux + cover art)"
+                    subtitle = when {
+                        downloadState == "DOWNLOADING" -> "Downloading… (FLAC preferred)"
+                        downloadState == "DONE" || isDownloaded -> "Downloaded — in your Muzic folder"
+                        else -> "Tagged file into Muzic (FLAC preferred)"
                     },
-                    enabled = downloadState != "DOWNLOADING",
+                    enabled = downloadState != "DOWNLOADING" && !isDownloaded,
                     onClick = {
-                        if (downloadState != "DOWNLOADING") {
+                        if (downloadState != "DOWNLOADING" && !isDownloaded) {
                             onDownload()
                             onDismiss()
                         }
+                    },
+                )
+            }
+
+            if (onAddToCollection != null) {
+                OnlineResultAction(
+                    icon = Icons.Rounded.Album,
+                    title = "Add to collection",
+                    subtitle = if (isDownloaded) "File under Telugu, Hindi, or any collection"
+                    else "Picked up automatically once downloaded",
+                    onClick = {
+                        onAddToCollection()
+                        onDismiss()
                     },
                 )
             }

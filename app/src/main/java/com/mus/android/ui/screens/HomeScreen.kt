@@ -41,16 +41,36 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.mus.android.R
+import com.mus.android.data.enrichment.provider.OnlineSearchResult
 import com.mus.android.data.model.Track
+import com.mus.android.data.music.HomeShelfItem
 import com.mus.android.ui.components.AlbumCard
+import com.mus.android.ui.components.AppleIconButton
+import com.mus.android.ui.components.AppleLargeTitleList
+import com.mus.android.ui.components.CatalogPlaylistCard
+import com.mus.android.ui.components.CatalogSongCard
+import com.mus.android.ui.components.OnlineResultOverlay
 import com.mus.android.ui.components.PlaylistCard
+import com.mus.android.ui.components.SectionHeader
+import com.mus.android.ui.components.Shelf
 import com.mus.android.ui.components.SongMenuContainer
 import com.mus.android.ui.components.TrackRow
+import com.mus.android.ui.components.YtPlaylistCard
+import com.mus.android.ui.components.YtPlaylistTracksSheet
 import com.mus.android.ui.theme.MusColors
 import com.mus.android.ui.theme.Spacing
+import com.mus.android.ui.viewmodel.DiscoveryViewModel
 import com.mus.android.ui.viewmodel.HomeViewModel
 import com.mus.android.ui.viewmodel.PermissionState
 
+/**
+ * Apple Music–style "Listen Now" home.
+ *
+ * The YouTube Music catalogue is the primary source: its home-feed shelves render first,
+ * followed by the signed-in account's YT playlists, then the local library content
+ * (Quick Picks, Recently Added, Albums, Collections). Background gradients and the
+ * dark MUS palette are unchanged.
+ */
 @Composable
 fun HomeScreen(
     onAlbumClick: (Long) -> Unit,
@@ -58,6 +78,7 @@ fun HomeScreen(
     onSettingsClick: () -> Unit = {},
     onTrackClick: (Track, List<Track>) -> Unit,
     viewModel: HomeViewModel = hiltViewModel(),
+    discoveryViewModel: DiscoveryViewModel = hiltViewModel(),
 ) {
     val isLoading by viewModel.isLoading.collectAsState()
     val needsPermission by viewModel.needsPermission.collectAsState()
@@ -65,10 +86,7 @@ fun HomeScreen(
     val tracks by viewModel.tracks.collectAsState()
     val errorMessage by viewModel.errorMessage.collectAsState()
     val recentlyAdded by viewModel.recentlyAdded.collectAsState()
-    val mostPlayed by viewModel.mostPlayed.collectAsState()
-    val recentlyPlayed by viewModel.recentlyPlayed.collectAsState()
     val albums by viewModel.albums.collectAsState()
-    val randomAlbums by viewModel.randomAlbums.collectAsState()
     val playlists by viewModel.playlists.collectAsState()
     val quickPicks by viewModel.quickPicks.collectAsState()
 
@@ -76,6 +94,13 @@ fun HomeScreen(
     val quickPickPagerState = rememberPagerState(pageCount = { quickPickPages.size })
 
     var selectedTrackForMenu by remember { mutableStateOf<Track?>(null) }
+
+    // Catalogue state (YT Music primary catalogue + account playlists)
+    val homeShelves by discoveryViewModel.homeShelves.collectAsState()
+    val ytPlaylists by discoveryViewModel.ytPlaylists.collectAsState()
+    val selectedYtPlaylist by discoveryViewModel.selectedYtPlaylist.collectAsState()
+    val ytPlaylistLoading by discoveryViewModel.ytPlaylistLoading.collectAsState()
+    var catalogResult by remember { mutableStateOf<OnlineSearchResult?>(null) }
 
     val context = LocalContext.current
     val activity = context as? Activity
@@ -284,129 +309,80 @@ fun HomeScreen(
                 }
             }
 
-            tracks.isEmpty() -> {
-                Column(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(Spacing.xxl),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.Center,
-                ) {
-                    Icon(
-                        painter = painterResource(id = R.drawable.ic_mus_logo),
-                        contentDescription = null,
-                        tint = Color.Unspecified,
-                        modifier = Modifier.size(64.dp),
-                    )
-                    Spacer(Modifier.height(Spacing.xl))
-                    Text(
-                        "Your Muzic folder is empty",
-                        style = MaterialTheme.typography.titleMedium,
-                        color = MusColors.OnBackground,
-                        textAlign = TextAlign.Center,
-                    )
-                    Spacer(Modifier.height(Spacing.sm))
-                    Text(
-                        "MUS organizes audio files strictly inside your dedicated /Muzic/ folder and its subdirectories. Add songs to /Muzic/ or choose a custom folder to begin.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MusColors.OnBackgroundSecondary,
-                        textAlign = TextAlign.Center,
-                    )
-                    Spacer(Modifier.height(Spacing.xl))
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        if (!viewModel.doesMuzicDirectoryExist()) {
-                            Button(
-                                onClick = {
-                                    viewModel.createMuzicDirectory()
-                                    viewModel.refreshLibrary()
-                                },
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = MusColors.OnBackground,
-                                    contentColor = MusColors.Background,
-                                ),
-                                shape = RoundedCornerShape(8.dp),
-                            ) {
-                                Text("Add Music")
-                            }
-                        }
-                        OutlinedButton(
-                            onClick = { folderPickerLauncher.launch(null) },
-                            shape = RoundedCornerShape(8.dp),
-                            colors = ButtonDefaults.outlinedButtonColors(contentColor = MusColors.OnBackground),
-                        ) {
-                            Text("Choose Muzic Folder")
-                        }
-                        IconButton(onClick = { viewModel.refreshLibrary() }) {
-                            Icon(
-                                Icons.Rounded.Refresh,
-                                contentDescription = "Rescan",
-                                tint = MusColors.OnBackground,
-                            )
-                        }
-                    }
-                    Spacer(Modifier.height(Spacing.md))
-                    TextButton(onClick = onSettingsClick) {
-                        Text(
-                            "Vault Settings",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MusColors.OnBackgroundSecondary,
-                        )
-                    }
-                }
-            }
-
             else -> {
-                LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(bottom = 120.dp), // space for mini-player + nav
-                ) {
-                    // Header
-                    item {
-                        Spacer(Modifier.height(Spacing.xxxl))
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = Spacing.base),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(
-                                    painter = painterResource(id = R.drawable.ic_mus_logo),
-                                    contentDescription = "MUS Logo",
-                                    tint = Color.Unspecified,
-                                    modifier = Modifier.size(28.dp),
-                                )
-                                Spacer(Modifier.width(Spacing.sm))
-                                Text(
-                                    "MUS",
-                                    style = MaterialTheme.typography.titleLarge,
-                                    color = MusColors.OnBackground,
-                                )
-                            }
+                LaunchedEffect(Unit) {
+                    discoveryViewModel.loadHomeFeedIfEmpty()
+                    discoveryViewModel.loadYtPlaylistsIfConnected()
+                }
 
-                            IconButton(onClick = onSettingsClick) {
-                                Icon(
-                                    Icons.Rounded.Settings,
-                                    contentDescription = "Settings",
-                                    tint = MusColors.OnBackgroundSecondary,
-                                    modifier = Modifier.size(22.dp),
-                                )
+                AppleLargeTitleList(
+                    title = "Listen Now",
+                    trailing = {
+                        AppleIconButton(
+                            icon = Icons.Rounded.Settings,
+                            contentDescription = "Settings",
+                            onClick = onSettingsClick,
+                            tint = MusColors.OnBackgroundSecondary,
+                            iconSize = 22.dp,
+                        )
+                    },
+                ) {
+                    // ── 1. YT MUSIC CATALOGUE — the primary source ──────────────
+                    homeShelves.forEach { shelf ->
+                        if (shelf.items.isEmpty()) return@forEach
+                        item(key = "cat_${shelf.title}") {
+                            Shelf(title = shelf.title) {
+                                items(shelf.items.size) { index ->
+                                    when (val item = shelf.items[index]) {
+                                        is HomeShelfItem.Track -> CatalogSongCard(
+                                            track = item.track,
+                                            onClick = {
+                                                catalogResult = discoveryViewModel.asOnlineResult(item.track)
+                                            },
+                                        )
+                                        is HomeShelfItem.Playlist -> CatalogPlaylistCard(
+                                            playlist = item.playlist,
+                                            onClick = { discoveryViewModel.openYtPlaylist(item.playlist) },
+                                        )
+                                    }
+                                }
                             }
                         }
-                        Spacer(Modifier.height(Spacing.xl))
+                        item(key = "cat_gap_${shelf.title}") { Spacer(Modifier.height(Spacing.xl)) }
                     }
 
-                    // 1. QUICK PICKS — top position, 8 songs, 4 per page
+                    // ── 2. YOUR YOUTUBE MUSIC PLAYLISTS ──────────────────────────
+                    if (ytPlaylists.isNotEmpty()) {
+                        item(key = "yt_pl_header") {
+                            SectionHeader(
+                                title = "Your YouTube Music playlists",
+                                modifier = Modifier.padding(top = Spacing.xs),
+                            )
+                            Spacer(Modifier.height(12.dp))
+                        }
+                        item(key = "yt_pl_row") {
+                            LazyRow(
+                                contentPadding = PaddingValues(horizontal = 20.dp),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            ) {
+                                items(ytPlaylists, key = { it.id }) { playlist ->
+                                    YtPlaylistCard(
+                                        playlist = playlist,
+                                        onClick = { discoveryViewModel.openYtPlaylist(playlist) },
+                                    )
+                                }
+                            }
+                        }
+                        item(key = "yt_pl_gap") { Spacer(Modifier.height(Spacing.xl)) }
+                    }
+
+                    // ── 3. QUICK PICKS (local) ───────────────────────────────────
                     if (quickPicks.isNotEmpty()) {
-                        item {
+                        item(key = "qp_header") {
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(horizontal = Spacing.base),
+                                    .padding(horizontal = 20.dp),
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
@@ -426,7 +402,7 @@ fun HomeScreen(
                             Spacer(Modifier.height(Spacing.xs))
                         }
 
-                        item {
+                        item(key = "qp_pager") {
                             Column(modifier = Modifier.fillMaxWidth()) {
                                 HorizontalPager(
                                     state = quickPickPagerState,
@@ -471,84 +447,38 @@ fun HomeScreen(
                                 }
                             }
                         }
-                        item { Spacer(Modifier.height(Spacing.xl)) }
+                        item(key = "qp_gap") { Spacer(Modifier.height(Spacing.xl)) }
                     }
 
-                    // 2. PLAYLISTS (Folder-derived playlists: English, Telugu, Hindi, etc.)
-                    if (playlists.isNotEmpty()) {
-                        item {
-                            Text(
-                                "Playlists",
-                                style = MaterialTheme.typography.titleMedium,
-                                color = MusColors.OnBackground,
-                                modifier = Modifier.padding(horizontal = Spacing.base),
+                    // ── 4. RECENTLY ADDED (local) ────────────────────────────────
+                    if (recentlyAdded.isNotEmpty()) {
+                        item(key = "ra_header") {
+                            SectionHeader("Recently Added")
+                            Spacer(Modifier.height(Spacing.xs))
+                        }
+                        items(
+                            recentlyAdded.take(4),
+                            key = { "ra_${it.id}" },
+                        ) { track ->
+                            TrackRow(
+                                track = track,
+                                onClick = { onTrackClick(track, recentlyAdded) },
+                                onMoreClick = { selectedTrackForMenu = track },
                             )
-                            Spacer(Modifier.height(Spacing.md))
                         }
-                        item {
-                            LazyRow(
-                                contentPadding = PaddingValues(horizontal = Spacing.base),
-                                horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
-                            ) {
-                                items(playlists, key = { it.id }) { pl ->
-                                    val tag = when {
-                                        pl.name.contains("Telugu", ignoreCase = true) || pl.systemKey == "TELUGU" -> "TE"
-                                        pl.name.contains("Tamil", ignoreCase = true) || pl.systemKey == "TAMIL" -> "TA"
-                                        pl.name.contains("Hindi", ignoreCase = true) || pl.systemKey == "HINDI" -> "HI"
-                                        pl.name.contains("English", ignoreCase = true) || pl.systemKey == "ENGLISH" -> "EN"
-                                        pl.name.length <= 3 -> pl.name.uppercase()
-                                        else -> pl.name.take(3).uppercase()
-                                    }
-                                    Column(
-                                        modifier = Modifier
-                                            .width(150.dp)
-                                            .clickable { onPlaylistClick(pl.id) }
-                                            .background(MusColors.SurfaceVariant, RoundedCornerShape(10.dp))
-                                            .padding(Spacing.md),
-                                    ) {
-                                        Box(
-                                            modifier = Modifier
-                                                .size(42.dp)
-                                                .background(MusColors.SurfaceElevated, RoundedCornerShape(8.dp)),
-                                            contentAlignment = Alignment.Center
-                                        ) {
-                                            Text(tag, style = MaterialTheme.typography.labelMedium, color = MusColors.OnBackground)
-                                        }
-                                        Spacer(Modifier.height(Spacing.sm))
-                                        Text(
-                                            pl.name,
-                                            style = MaterialTheme.typography.titleSmall,
-                                            color = MusColors.OnBackground,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-                                        Text(
-                                            "Playlist",
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MusColors.OnBackgroundSecondary
-                                        )
-                                    }
-                                }
-                            }
-                            Spacer(Modifier.height(Spacing.xl))
-                        }
+                        item(key = "ra_gap") { Spacer(Modifier.height(Spacing.xl)) }
                     }
 
-                    // 3. YOUR ALBUMS
+                    // ── 5. YOUR ALBUMS (local) ───────────────────────────────────
                     if (albums.isNotEmpty()) {
-                        item {
-                            Text(
-                                "Your Albums",
-                                style = MaterialTheme.typography.titleMedium,
-                                color = MusColors.OnBackground,
-                                modifier = Modifier.padding(horizontal = Spacing.base),
-                            )
-                            Spacer(Modifier.height(Spacing.sm))
+                        item(key = "al_header") {
+                            SectionHeader("Your Albums")
+                            Spacer(Modifier.height(12.dp))
                         }
-                        item {
+                        item(key = "al_row") {
                             LazyRow(
-                                contentPadding = PaddingValues(horizontal = Spacing.base),
-                                horizontalArrangement = Arrangement.spacedBy(Spacing.md),
+                                contentPadding = PaddingValues(horizontal = 20.dp),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
                             ) {
                                 items(albums, key = { it.id }) { album ->
                                     AlbumCard(
@@ -559,11 +489,50 @@ fun HomeScreen(
                                     )
                                 }
                             }
-                            Spacer(Modifier.height(Spacing.xl))
                         }
+                        item(key = "al_gap") { Spacer(Modifier.height(Spacing.xl)) }
+                    }
+
+                    // ── 6. COLLECTIONS (local playlists incl. Telugu / Hindi) ────
+                    if (playlists.isNotEmpty()) {
+                        item(key = "col_header") {
+                            SectionHeader("Collections")
+                            Spacer(Modifier.height(12.dp))
+                        }
+                        item(key = "col_row") {
+                            LazyRow(
+                                contentPadding = PaddingValues(horizontal = 20.dp),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            ) {
+                                items(playlists, key = { it.id }) { pl ->
+                                    PlaylistCard(
+                                        name = pl.name,
+                                        onClick = { onPlaylistClick(pl.id) },
+                                    )
+                                }
+                            }
+                        }
+                        item(key = "col_gap") { Spacer(Modifier.height(Spacing.xl)) }
                     }
                 }
             }
+        }
+
+        // Catalogue song actions (play / queue / FLAC download / add to collection)
+        OnlineResultOverlay(
+            result = catalogResult,
+            onDismiss = { catalogResult = null },
+            discovery = discoveryViewModel,
+        )
+
+        // Opened YT playlist (account or catalogue) with its tracks
+        selectedYtPlaylist?.let { selection ->
+            YtPlaylistTracksSheet(
+                selection = selection,
+                isLoading = ytPlaylistLoading,
+                onDismiss = { discoveryViewModel.closeYtPlaylist() },
+                discovery = discoveryViewModel,
+            )
         }
 
         SongMenuContainer(

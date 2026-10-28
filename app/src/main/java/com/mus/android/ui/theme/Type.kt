@@ -22,6 +22,7 @@ val InterFamily = FontFamily(
     Font(googleFont = InterFont, fontProvider = GoogleFontProvider, weight = FontWeight.Normal),
     Font(googleFont = InterFont, fontProvider = GoogleFontProvider, weight = FontWeight.Medium),
     Font(googleFont = InterFont, fontProvider = GoogleFontProvider, weight = FontWeight.SemiBold),
+    Font(googleFont = InterFont, fontProvider = GoogleFontProvider, weight = FontWeight.Bold),
 )
 
 // DotGothic16 — dot-matrix numerals for timestamps (Nothing Ndot nod)
@@ -34,14 +35,14 @@ val MusTypography = Typography(
     // Track title, album name — user should register first
     titleLarge = TextStyle(
         fontFamily = InterFamily,
-        fontWeight = FontWeight.Medium,
+        fontWeight = FontWeight.Bold,
         fontSize = 24.sp,
         lineHeight = 30.sp,
         letterSpacing = (-0.5).sp,
     ),
     titleMedium = TextStyle(
         fontFamily = InterFamily,
-        fontWeight = FontWeight.Medium,
+        fontWeight = FontWeight.Bold,
         fontSize = 18.sp,
         lineHeight = 24.sp,
         letterSpacing = (-0.3).sp,
@@ -98,4 +99,41 @@ val TimestampStyle = TextStyle(
     fontWeight = FontWeight.Normal,
     fontSize = 13.sp,
     letterSpacing = 1.sp,
+)
+
+// ── Apple Music–style type scale (SF Pro lineage, rendered in Inter) ──
+
+/// iOS LargeTitle — 34pt Bold. Screen-level page titles (Home, Library, Search).
+val LargeTitleStyle = TextStyle(
+    fontFamily = InterFamily,
+    fontWeight = FontWeight.Bold,
+    fontSize = 34.sp,
+    lineHeight = 41.sp,
+    letterSpacing = 0.sp,
+)
+
+/// iOS Title2 — 22pt Bold. Shelf/section headers.
+val SectionHeaderStyle = TextStyle(
+    fontFamily = InterFamily,
+    fontWeight = FontWeight.Bold,
+    fontSize = 22.sp,
+    lineHeight = 28.sp,
+    letterSpacing = (-0.3).sp,
+)
+
+/// iOS Title3 — 20pt Semibold.
+val Title3Style = TextStyle(
+    fontFamily = InterFamily,
+    fontWeight = FontWeight.SemiBold,
+    fontSize = 20.sp,
+    lineHeight = 25.sp,
+    letterSpacing = (-0.2).sp,
+)
+
+/// iOS Footnote — 13sp Regular. Secondary metadata rows.
+val FootnoteStyle = TextStyle(
+    fontFamily = InterFamily,
+    fontWeight = FontWeight.Normal,
+    fontSize = 13.sp,
+    lineHeight = 18.sp,
 )

@@ -13,13 +13,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.PlaylistAdd
 import androidx.compose.material.icons.rounded.Add
-import androidx.compose.material.icons.rounded.Album
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Favorite
-import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.rounded.QueueMusic
 import androidx.compose.material3.*
-import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -30,16 +27,22 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import coil.compose.AsyncImage
-import com.mus.android.data.classifier.LanguageClassifier
 import com.mus.android.data.model.Playlist
 import com.mus.android.data.model.Track
 import com.mus.android.ui.components.AlbumCard
+import com.mus.android.ui.components.AppleSegmentedControl
 import com.mus.android.ui.components.SongMenuContainer
 import com.mus.android.ui.components.TrackRow
+import com.mus.android.ui.theme.LargeTitleStyle
 import com.mus.android.ui.theme.MusColors
 import com.mus.android.ui.theme.Spacing
 import com.mus.android.ui.viewmodel.LibraryViewModel
 
+/**
+ * Apple Music–style Library: pinned large title + segmented picker, collections
+ * (playlists incl. Telugu / Hindi), albums, artists, songs with a Downloaded filter,
+ * and favorites. Background gradients and the dark MUS palette are unchanged.
+ */
 @Composable
 fun LibraryScreen(
     onAlbumClick: (Long) -> Unit,
@@ -55,11 +58,12 @@ fun LibraryScreen(
     val favorites by viewModel.favorites.collectAsState()
     val pendingDownloadCount by viewModel.pendingDownloadCount.collectAsState()
     val allTracks by viewModel.allTracks.collectAsState()
+    val downloadedTracks by viewModel.downloadedTracks.collectAsState()
     val filteredTracks by viewModel.filteredTracks.collectAsState()
     val selectedLanguageFilter by viewModel.selectedLanguageFilter.collectAsState()
 
     var selectedTab by remember { mutableIntStateOf(0) }
-    val tabs = listOf("Playlists", "Albums", "Artists", "Songs", "Favorites")
+    val tabs = listOf("Collections", "Albums", "Artists", "Songs", "Favorites")
 
     var showCreateDialog by remember { mutableStateOf(false) }
     var newPlaylistName by remember { mutableStateOf("") }
@@ -75,45 +79,22 @@ fun LibraryScreen(
 
         Text(
             "Library",
-            style = MaterialTheme.typography.titleLarge,
+            style = LargeTitleStyle,
             color = MusColors.OnBackground,
-            modifier = Modifier.padding(horizontal = Spacing.base),
+            modifier = Modifier.padding(horizontal = 20.dp),
         )
 
-        Spacer(Modifier.height(Spacing.base))
+        Spacer(Modifier.height(12.dp))
 
-        // Tab row
-        ScrollableTabRow(
-            selectedTabIndex = selectedTab,
-            containerColor = Color.Transparent,
-            contentColor = MusColors.OnBackground,
-            edgePadding = Spacing.base,
-            indicator = { tabPositions ->
-                if (selectedTab < tabPositions.size) {
-                    TabRowDefaults.SecondaryIndicator(
-                        Modifier.tabIndicatorOffset(tabPositions[selectedTab]),
-                        color = MusColors.OnBackground,
-                        height = 2.dp,
-                    )
-                }
-            },
-            divider = {},
-        ) {
-            tabs.forEachIndexed { index, title ->
-                Tab(
-                    selected = selectedTab == index,
-                    onClick = { selectedTab = index },
-                    text = {
-                        Text(
-                            title,
-                            style = MaterialTheme.typography.labelLarge,
-                            color = if (selectedTab == index) MusColors.OnBackground
-                                    else MusColors.OnBackgroundTertiary,
-                        )
-                    }
-                )
-            }
-        }
+        // Apple Music–style segmented picker
+        AppleSegmentedControl(
+            options = tabs,
+            selected = selectedTab,
+            onSelect = { selectedTab = it },
+            modifier = Modifier
+                .padding(horizontal = 20.dp)
+                .fillMaxWidth(),
+        )
 
         Spacer(Modifier.height(Spacing.sm))
 
@@ -122,7 +103,7 @@ fun LibraryScreen(
                 LazyColumn(
                     contentPadding = PaddingValues(bottom = 120.dp),
                 ) {
-                    // Create playlist button
+                    // Create collection button
                     item {
                         Row(
                             modifier = Modifier
@@ -133,7 +114,7 @@ fun LibraryScreen(
                         ) {
                             Icon(
                                 Icons.Rounded.Add,
-                                contentDescription = "Create Playlist",
+                                contentDescription = "Create Collection",
                                 tint = MusColors.OnBackground,
                                 modifier = Modifier
                                     .size(48.dp)
@@ -142,7 +123,7 @@ fun LibraryScreen(
                             )
                             Spacer(Modifier.width(Spacing.md))
                             Text(
-                                "Create Playlist",
+                                "New Collection",
                                 style = MaterialTheme.typography.titleSmall,
                                 color = MusColors.OnBackground,
                             )
@@ -231,7 +212,7 @@ fun LibraryScreen(
                         }
                     }
 
-                    // All Playlists
+                    // All collections (playlists incl. Telugu / Hindi / custom)
                     if (playlists.isNotEmpty()) {
                         items(playlists, key = { it.id }) { playlist ->
                             Row(
@@ -258,7 +239,7 @@ fun LibraryScreen(
                                         color = MusColors.OnBackground,
                                     )
                                     Text(
-                                        "Playlist",
+                                        "Collection",
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MusColors.OnBackgroundSecondary,
                                     )
@@ -268,7 +249,7 @@ fun LibraryScreen(
                                 ) {
                                     Icon(
                                         Icons.Rounded.DeleteOutline,
-                                        contentDescription = "Delete Playlist",
+                                        contentDescription = "Delete Collection",
                                         tint = MusColors.OnBackgroundTertiary,
                                     )
                                 }
@@ -341,14 +322,15 @@ fun LibraryScreen(
             }
 
             3 -> {
-                // All songs with Language Filter Chips
+                // All songs with Downloaded + language filter chips
                 Column(modifier = Modifier.fillMaxSize()) {
                     val hasUnknown = remember(allTracks) {
                         allTracks.any { it.language.equals("Unknown", ignoreCase = true) || it.language.isBlank() }
                     }
-                    val filterOptions = remember(allTracks.size, hasUnknown) {
+                    val filterOptions = remember(allTracks.size, downloadedTracks.size, hasUnknown) {
                         buildList {
                             add("All" to "All (${allTracks.size})")
+                            add("Downloaded" to "Downloaded (${downloadedTracks.size})")
                             add("Hindi" to "Hindi")
                             add("English" to "English")
                             add("Other" to "Other")
@@ -385,7 +367,8 @@ fun LibraryScreen(
                             contentAlignment = Alignment.Center,
                         ) {
                             Text(
-                                "No songs found for $selectedLanguageFilter",
+                                if (selectedLanguageFilter == "Downloaded") "No downloads yet — grab songs from the Search tab"
+                                else "No songs found for $selectedLanguageFilter",
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MusColors.OnBackgroundTertiary,
                             )
@@ -440,16 +423,16 @@ fun LibraryScreen(
         onNavigateToAlbum = onAlbumClick,
     )
 
-    // Create playlist dialog
+    // Create collection dialog
     if (showCreateDialog) {
         AlertDialog(
             onDismissRequest = { showCreateDialog = false; newPlaylistName = "" },
-            title = { Text("New Playlist", color = MusColors.OnBackground) },
+            title = { Text("New Collection", color = MusColors.OnBackground) },
             text = {
                 OutlinedTextField(
                     value = newPlaylistName,
                     onValueChange = { newPlaylistName = it },
-                    placeholder = { Text("Playlist name") },
+                    placeholder = { Text("Telugu, Hindi, Road Trip…") },
                     singleLine = true,
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedTextColor = MusColors.OnBackground,
@@ -484,7 +467,7 @@ fun LibraryScreen(
         AlertDialog(
             onDismissRequest = { playlistToDelete = null },
             title = {
-                Text("Delete Playlist", color = MusColors.OnBackground)
+                Text("Delete Collection", color = MusColors.OnBackground)
             },
             text = {
                 Text(

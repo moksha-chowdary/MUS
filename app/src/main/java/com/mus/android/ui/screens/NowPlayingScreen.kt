@@ -27,10 +27,10 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.media3.common.Player
 import coil.compose.AsyncImage
 import com.mus.android.ui.ambient.AmbientGradientBackground
+import com.mus.android.ui.components.AppleSlider
 import com.mus.android.ui.components.DepthCarousel
 import com.mus.android.ui.components.PlayPauseMorphButton
 import com.mus.android.ui.components.QualityBadge
-import com.mus.android.ui.components.WaveformSlider
 import com.mus.android.ui.components.formatDuration
 import com.mus.android.ui.theme.MusColors
 import com.mus.android.ui.theme.Spacing
@@ -310,18 +310,16 @@ fun NowPlayingScreen(
                     }
                 }
 
-                // Centered Play/Pause Button
+                // Centered Play/Pause Button — Apple Music style: large plain glyph
                 Box(
                     modifier = Modifier
-                        .size(64.dp)
-                        .clip(RoundedCornerShape(32.dp))
-                        .background(MusColors.OnBackground.copy(alpha = 0.1f))
+                        .size(72.dp)
                         .clickable { viewModel.togglePlayPause() },
                     contentAlignment = Alignment.Center,
                 ) {
                     PlayPauseMorphButton(
                         isPlaying = isPlaying,
-                        size = 32.dp,
+                        size = 38.dp,
                         color = MusColors.OnBackground,
                     )
                 }
@@ -382,6 +380,7 @@ fun NowPlayingScreen(
         if (showAddToPlaylist) {
             com.mus.android.ui.components.AddToPlaylistSheet(
                 playlists = playlists,
+                title = "Add to Collection",
                 alreadyInPlaylistIds = existingPlaylistIds,
                 onPlaylistSelected = { chosenPlaylistId ->
                     val chosen = playlists.find { it.id == chosenPlaylistId }
@@ -440,16 +439,12 @@ private fun PlaybackProgressSection(
 ) {
     val position by viewModel.position.collectAsState()
     val duration by viewModel.duration.collectAsState()
-    val waveformData by viewModel.waveformData.collectAsState()
-    val isPlaying by viewModel.isPlaying.collectAsState()
     val progress = if (duration > 0) position.toFloat() / duration.toFloat() else 0f
 
     Column(modifier = modifier) {
-        // Waveform slider — single bipolar progressive reveal
-        WaveformSlider(
-            waveformData = waveformData,
+        // Apple Music–style thin scrubber (drag shows thumb, commits on release)
+        AppleSlider(
             progress = progress,
-            isPlaying = isPlaying,
             onSeek = { viewModel.seekTo(it) },
             modifier = Modifier.fillMaxWidth(),
         )
@@ -469,7 +464,7 @@ private fun PlaybackProgressSection(
                 color = MusColors.OnBackgroundSecondary,
             )
             Text(
-                text = formatDuration(duration),
+                text = "-" + formatDuration((duration - position).coerceAtLeast(0)),
                 style = TimestampStyle,
                 color = MusColors.OnBackgroundTertiary,
             )

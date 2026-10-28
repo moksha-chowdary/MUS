@@ -20,16 +20,18 @@ import com.mus.android.ui.theme.MusColors
 import com.mus.android.ui.theme.Spacing
 
 /**
- * A row representing an online music search result.
- * Visually distinct from local TrackRow — shows source badge.
- * Tapping opens the OnlineResultSheet (handled by the parent).
+ * Apple Music–style row for an online catalogue result.
  *
- * This is a discovery/planning surface. Tapping does NOT play audio.
+ * - Rounded artwork tile, primary/secondary text stack
+ * - Trailing slot shows the "Downloaded" badge when the song is already in the
+ *   local download index, otherwise a subtle source label
+ * - Tapping opens the OnlineResultSheet (handled by the parent). Does NOT play audio.
  */
 @Composable
 fun OnlineTrackRow(
     result: OnlineSearchResult,
     onClick: () -> Unit,
+    isDownloaded: Boolean = false,
 ) {
     Row(
         modifier = Modifier
@@ -86,17 +88,21 @@ fun OnlineTrackRow(
 
         Spacer(Modifier.width(Spacing.sm))
 
-        // Source badge — clearly signals this is NOT a local track
-        Surface(
-            shape = RoundedCornerShape(4.dp),
-            color = MusColors.SurfaceVariant,
-        ) {
-            Text(
-                text = result.source,
-                style = MaterialTheme.typography.labelSmall,
-                color = MusColors.OnBackgroundSecondary,
-                modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp),
-            )
+        if (isDownloaded) {
+            DownloadedBadge()
+        } else {
+            // Source label — clearly signals this is NOT a local track
+            Surface(
+                shape = RoundedCornerShape(4.dp),
+                color = MusColors.SurfaceVariant,
+            ) {
+                Text(
+                    text = result.source,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MusColors.OnBackgroundSecondary,
+                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp),
+                )
+            }
         }
     }
 }
