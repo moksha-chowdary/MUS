@@ -2,11 +2,17 @@ package com.mus.android.ui.viewmodel
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.mus.android.data.download.TrackDownloadManager
 import com.mus.android.data.enrichment.provider.OnlineMusicSearchProvider
 import com.mus.android.data.enrichment.provider.OnlineSearchResult
 import com.mus.android.data.model.DownloadQueueItem
 import com.mus.android.data.model.DownloadStatus
+import com.mus.android.data.music.InnerTubeMusicApi
+import com.mus.android.data.music.YouTubeMusicTrack
+import com.mus.android.data.music.YouTubePlaylistSummary
 import com.mus.android.data.repository.MusicRepository
+import com.mus.android.data.ytmusic.YtMusicAuthManager
+import com.mus.android.playback.PlaybackManager
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -20,10 +26,20 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
 
+/** A YT Music playlist opened in the app, with its tracks ready for playback. */
+data class YtPlaylistSelection(
+    val playlist: YouTubePlaylistSummary,
+    val tracks: List<OnlineSearchResult>,
+)
+
 @HiltViewModel
 class DiscoveryViewModel @Inject constructor(
     private val providers: Set<@JvmSuppressWildcards OnlineMusicSearchProvider>,
     private val repository: MusicRepository,
+    private val playbackManager: PlaybackManager,
+    private val downloadManager: TrackDownloadManager,
+    private val innerTube: InnerTubeMusicApi,
+    private val ytAuth: YtMusicAuthManager,
 ) : ViewModel() {
 
     private val _query = MutableStateFlow("")
@@ -41,8 +57,89 @@ class DiscoveryViewModel @Inject constructor(
     val pendingDownloadCount: StateFlow<Int> = repository.observePendingDownloadCount()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
 
+    /** Live progress from the download pipeline (keyed by trackKey). */
+    val downloadProgress = downloadManager.downloads
+
     private val _addToQueueResult = MutableStateFlow<String?>(null)
     val addToQueueResult: StateFlow<String?> = _addToQueueResult.asStateFlow()
+
+    // ── YouTube Music library playlists (signed-in account) ──────────────
+
+    private val _ytPlaylists = MutableStateFlow<List<YouTubePlaylistSummary>>(emptyList())
+    val ytPlaylists: StateFlow<List<YouTubePlaylistSummary>> = _ytPlaylists.asStateFlow()
+
+    private val _ytPlaylistsLoading = MutableStateFlow(false)
+    val ytPlaylistsLoading: StateFlow<Boolean> = _ytPlaylistsLoading.asStateFlow()
+
+    private val _selectedYtPlaylist = MutableStateFlow<YtPlaylistSelection?>(null)
+    val selectedYtPlaylist: StateFlow<YtPlaylistSelection?> = _selectedYtPlaylist.asStateFlow()
+
+    private val _ytPlaylistLoading = MutableStateFlow(false)
+    val ytPlaylistLoading: StateFlow<Boolean> = _ytPlaylistLoading.asStateFlow()
+
+    private var playlistsLoadAttempted = false
+
+    private fun ytConnected(): Boolean = ytAuth.connection.value.isConnected
+
+    /** Loads the account's YT Music playlists once per screen visit.
+     *  No-op when signed out; failures hide the section silently. */
+    fun loadYtPlaylistsIfConnected() {
+        if (!ytConnected() || playlistsLoadAttempted) return
+        playlistsLoadAttempted = true
+        _ytPlaylistsLoading.value = true
+        viewModelScope.launch {
+            try {
+                _ytPlaylists.value = withContext(Dispatchers.IO) {
+                    innerTube.fetchLibraryPlaylists()
+                }
+            } catch (_: Exception) {
+                _ytPlaylists.value = emptyList()
+            } finally {
+                _ytPlaylistsLoading.value = false
+            }
+        }
+    }
+
+    fun openYtPlaylist(playlist: YouTubePlaylistSummary) {
+        if (_ytPlaylistLoading.value) return
+        _ytPlaylistLoading.value = true
+        viewModelScope.launch {
+            val tracks = try {
+                withContext(Dispatchers.IO) {
+                    innerTube.fetchPlaylistTracks(playlist.id, limit = 300)
+                }.map { it.toOnlineResult() }
+            } catch (_: Exception) {
+                emptyList()
+            }
+            _selectedYtPlaylist.value = YtPlaylistSelection(playlist, tracks)
+            _ytPlaylistLoading.value = false
+        }
+    }
+
+    fun closeYtPlaylist() {
+        _selectedYtPlaylist.value = null
+    }
+
+    /** Plays one playlist track with the rest of the playlist as the queue. */
+    fun playYtPlaylistTrack(selection: YtPlaylistSelection, start: OnlineSearchResult) {
+        playbackManager.playOnline(start, selection.tracks.ifEmpty { listOf(start) })
+    }
+
+    fun addYtPlaylistTrackToQueue(track: OnlineSearchResult) {
+        playbackManager.addOnlineToQueue(track)
+    }
+
+    private fun YouTubeMusicTrack.toOnlineResult(): OnlineSearchResult = OnlineSearchResult(
+        id = videoId,
+        title = title,
+        artist = artist,
+        album = album,
+        artworkUrl = artworkUrl,
+        source = "YouTube Music",
+        sourceId = videoId,
+        sourceUrl = "https://music.youtube.com/watch?v=$videoId",
+        durationMs = (durationSeconds ?: 0) * 1_000L,
+    )
 
     private var searchJob: Job? = null
 
@@ -90,8 +187,51 @@ class DiscoveryViewModel @Inject constructor(
     }
 
     /**
+     * Streams the online result through the InnerTube-backed playback
+     * resolver (yt:// → googlevideo + PoToken).
+     */
+    fun playOnline(result: OnlineSearchResult) {
+        playbackManager.playOnline(result, _onlineResults.value.filter {
+            it.source.startsWith("YouTube", ignoreCase = true)
+        }.ifEmpty { listOf(result) })
+    }
+
+    fun addOnlineToQueue(result: OnlineSearchResult) {
+        playbackManager.addOnlineToQueue(result)
+    }
+
+    /**
+     * Starts a real download: stream resolution → parallel transfer →
+     * lossless remux → tagging → MediaStore → Room trackKey index.
+     */
+    fun downloadOnline(result: OnlineSearchResult) {
+        val videoId = result.sourceId.ifBlank { result.id }
+        downloadManager.downloadTrack(
+            title = result.title,
+            artist = result.artist,
+            album = result.album,
+            artworkUrl = result.artworkUrl,
+            videoId = videoId,
+            durationMs = result.durationMs.takeIf { it > 0 },
+            queueItemId = "${result.source}_${videoId}",
+        )
+    }
+
+    /** UI state helper: current download state for a result's videoId. */
+    fun downloadStateFor(result: OnlineSearchResult): String? {
+        val videoId = result.sourceId.ifBlank { result.id }
+        val key = TrackDownloadManager.makeDownloadKey(result.title, result.artist)
+        val progress = downloadProgress.value[key] ?: return null
+        return when {
+            progress.isFinished && progress.error == null -> "DONE"
+            progress.error != null -> "ERROR"
+            else -> "DOWNLOADING"
+        }.let { if (it == "DONE") it else it }
+    }
+
+    /**
      * Adds an online result to the "MUS — To Download" planning list.
-     * Deduplicates automatically. Never downloads audio.
+     * Deduplicates automatically.
      */
     fun addToDownloadQueue(result: OnlineSearchResult) {
         viewModelScope.launch {

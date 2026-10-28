@@ -30,12 +30,12 @@ import com.mus.android.ui.theme.Spacing
 
 /**
  * Bottom sheet shown when the user taps an online search result.
- * Provides:
- *   - Add to MUS To Download (always available)
+ * Provides (ported from LastWave's YouTube Music mechanism):
+ *   - Play now (streams via the InnerTube resolver)
+ *   - Add to queue
+ *   - Download audio (remux + tagging + trackKey index)
+ *   - Add to MUS — To Download (planning list)
  *   - Open Source (opens official URL in browser)
- *   - Add to YouTube Playlist (shown if YouTube OAuth is configured, gated)
- *
- * MUS does NOT download audio. This is a discovery / planning surface only.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -43,6 +43,10 @@ fun OnlineResultSheet(
     result: OnlineSearchResult,
     onDismiss: () -> Unit,
     onAddToDownloadList: () -> Unit,
+    onPlay: (() -> Unit)? = null,
+    onAddToQueue: (() -> Unit)? = null,
+    onDownload: (() -> Unit)? = null,
+    downloadState: String? = null,
     youTubeOAuthConfigured: Boolean = false,
     onAddToYouTubePlaylist: (() -> Unit)? = null,
 ) {
@@ -135,6 +139,51 @@ fun OnlineResultSheet(
             )
 
             // Actions
+            val isYouTubeSource = result.source.startsWith("YouTube", ignoreCase = true)
+
+            if (isYouTubeSource && onPlay != null) {
+                OnlineResultAction(
+                    icon = Icons.Rounded.PlayArrow,
+                    title = "Play now",
+                    subtitle = "Stream via YouTube Music",
+                    onClick = {
+                        onPlay()
+                        onDismiss()
+                    },
+                )
+            }
+
+            if (isYouTubeSource && onAddToQueue != null) {
+                OnlineResultAction(
+                    icon = Icons.Rounded.Add,
+                    title = "Add to queue",
+                    subtitle = "Append to the current playback queue",
+                    onClick = {
+                        onAddToQueue()
+                        onDismiss()
+                    },
+                )
+            }
+
+            if (isYouTubeSource && onDownload != null) {
+                OnlineResultAction(
+                    icon = Icons.Rounded.Download,
+                    title = "Download audio",
+                    subtitle = when (downloadState) {
+                        "DOWNLOADING" -> "Downloading…"
+                        "DONE" -> "Downloaded — check Muzic"
+                        else -> "Tagged file into Muzic (remux + cover art)"
+                    },
+                    enabled = downloadState != "DOWNLOADING",
+                    onClick = {
+                        if (downloadState != "DOWNLOADING") {
+                            onDownload()
+                            onDismiss()
+                        }
+                    },
+                )
+            }
+
             OnlineResultAction(
                 icon = Icons.AutoMirrored.Rounded.PlaylistAdd,
                 title = "Add to MUS — To Download",
@@ -167,14 +216,6 @@ fun OnlineResultSheet(
                             onAddToYouTubePlaylist()
                             onDismiss()
                         },
-                    )
-                } else {
-                    OnlineResultAction(
-                        icon = Icons.Rounded.LinkOff,
-                        title = "Connect YouTube to enable this",
-                        subtitle = "Set youtube.oauth.client_id in local.properties",
-                        enabled = false,
-                        onClick = {},
                     )
                 }
             }

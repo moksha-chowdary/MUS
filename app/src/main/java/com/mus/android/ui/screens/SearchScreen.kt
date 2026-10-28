@@ -1,6 +1,7 @@
 package com.mus.android.ui.screens
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -10,23 +11,32 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.PlaylistAdd
+import androidx.compose.material.icons.automirrored.rounded.QueueMusic
 import androidx.compose.material.icons.rounded.Clear
+import androidx.compose.material.icons.rounded.LibraryMusic
+import androidx.compose.material.icons.rounded.MoreVert
+import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
+import coil.compose.AsyncImage
 import com.mus.android.data.enrichment.provider.OnlineSearchResult
 import com.mus.android.data.model.Track
+import com.mus.android.data.music.YouTubePlaylistSummary
 import com.mus.android.ui.components.AlbumCard
 import com.mus.android.ui.components.OnlineResultSheet
 import com.mus.android.ui.components.OnlineTrackRow
@@ -66,6 +76,14 @@ fun SearchScreen(
     val filterOptions = listOf("All", "Songs", "Albums", "Artists")
 
     var selectedOnlineResult by remember { mutableStateOf<OnlineSearchResult?>(null) }
+
+    // YouTube Music library playlists (signed-in account)
+    val ytPlaylists by discoveryViewModel.ytPlaylists.collectAsState()
+    val ytPlaylistsLoading by discoveryViewModel.ytPlaylistsLoading.collectAsState()
+    val selectedYtPlaylist by discoveryViewModel.selectedYtPlaylist.collectAsState()
+    val ytPlaylistLoading by discoveryViewModel.ytPlaylistLoading.collectAsState()
+    var playlistTrackForMenu by remember { mutableStateOf<OnlineSearchResult?>(null) }
+    LaunchedEffect(Unit) { discoveryViewModel.loadYtPlaylistsIfConnected() }
 
     // Show toast when item is added to download queue
     val snackbarHostState = remember { SnackbarHostState() }
@@ -266,8 +284,11 @@ fun SearchScreen(
                     results = onlineResults,
                     isSearching = isSearchingOnline,
                     pendingDownloadCount = pendingDownloadCount,
+                    ytPlaylists = ytPlaylists,
+                    ytPlaylistsLoading = ytPlaylistsLoading,
                     onResultClick = { selectedOnlineResult = it },
                     onDownloadQueueClick = onDownloadQueueClick,
+                    onPlaylistClick = { discoveryViewModel.openYtPlaylist(it) },
                 )
             }
         }
@@ -287,6 +308,52 @@ fun SearchScreen(
                 discoveryViewModel.addToDownloadQueue(result)
                 selectedOnlineResult = null
             },
+            onPlay = {
+                discoveryViewModel.playOnline(result)
+                selectedOnlineResult = null
+            },
+            onAddToQueue = {
+                discoveryViewModel.addOnlineToQueue(result)
+                selectedOnlineResult = null
+            },
+            onDownload = {
+                discoveryViewModel.downloadOnline(result)
+                selectedOnlineResult = null
+            },
+            downloadState = discoveryViewModel.downloadStateFor(result),
+        )
+    }
+
+    selectedYtPlaylist?.let { selection ->
+        YtPlaylistTracksSheet(
+            selection = selection,
+            isLoading = ytPlaylistLoading,
+            onDismiss = { discoveryViewModel.closeYtPlaylist() },
+            onTrackClick = { track -> discoveryViewModel.playYtPlaylistTrack(selection, track) },
+            onTrackMenuClick = { playlistTrackForMenu = it },
+            onPlayAll = {
+                selection.tracks.firstOrNull()?.let { discoveryViewModel.playYtPlaylistTrack(selection, it) }
+            },
+        )
+    }
+
+    playlistTrackForMenu?.let { track ->
+        OnlineResultSheet(
+            result = track,
+            onDismiss = { playlistTrackForMenu = null },
+            onAddToDownloadList = {
+                discoveryViewModel.addToDownloadQueue(track)
+                playlistTrackForMenu = null
+            },
+            onAddToQueue = {
+                discoveryViewModel.addYtPlaylistTrackToQueue(track)
+                playlistTrackForMenu = null
+            },
+            onDownload = {
+                discoveryViewModel.downloadOnline(track)
+                playlistTrackForMenu = null
+            },
+            downloadState = discoveryViewModel.downloadStateFor(track),
         )
     }
 
@@ -407,13 +474,25 @@ private fun OnlineSearchContent(
     results: List<OnlineSearchResult>,
     isSearching: Boolean,
     pendingDownloadCount: Int,
+    ytPlaylists: List<YouTubePlaylistSummary>,
+    ytPlaylistsLoading: Boolean,
     onResultClick: (OnlineSearchResult) -> Unit,
     onDownloadQueueClick: () -> Unit,
+    onPlaylistClick: (YouTubePlaylistSummary) -> Unit,
 ) {
     when {
         query.isEmpty() -> {
-            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Column(
+            Column(modifier = Modifier.fillMaxSize()) {
+                YtPlaylistsRow(
+                    playlists = ytPlaylists,
+                    isLoading = ytPlaylistsLoading,
+                    onPlaylistClick = onPlaylistClick,
+                )
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.spacedBy(Spacing.md),
                 ) {
@@ -446,6 +525,7 @@ private fun OnlineSearchContent(
                             style = MaterialTheme.typography.labelMedium,
                         )
                     }
+                }
                 }
             }
         }
@@ -545,4 +625,236 @@ private fun SectionHeaderInline(title: String) {
         style = MaterialTheme.typography.titleSmall,
         color = MusColors.OnBackground,
     )
+}
+
+/**
+ * Horizontal row of the signed-in account's YouTube Music playlists, shown in
+ * the online tab's empty state. Renders nothing when signed out / failed, so
+ * the empty state stays identical for everyone else.
+ */
+@Composable
+private fun YtPlaylistsRow(
+    playlists: List<YouTubePlaylistSummary>,
+    isLoading: Boolean,
+    onPlaylistClick: (YouTubePlaylistSummary) -> Unit,
+) {
+    if (playlists.isEmpty() && !isLoading) return
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = Spacing.base, vertical = Spacing.sm),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                Icons.Rounded.LibraryMusic,
+                contentDescription = null,
+                tint = MusColors.OnBackground,
+                modifier = Modifier.size(18.dp),
+            )
+            Spacer(Modifier.width(Spacing.xs))
+            Text(
+                "Your YouTube Music playlists",
+                style = MaterialTheme.typography.titleSmall,
+                color = MusColors.OnBackground,
+            )
+        }
+        if (isLoading) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = Spacing.base, vertical = Spacing.md),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                CircularProgressIndicator(
+                    color = MusColors.OnBackground,
+                    strokeWidth = 2.dp,
+                    modifier = Modifier.size(18.dp),
+                )
+                Spacer(Modifier.width(Spacing.sm))
+                Text(
+                    "Loading playlists…",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MusColors.OnBackgroundTertiary,
+                )
+            }
+        } else if (playlists.isEmpty()) {
+            Text(
+                "Signed in, but no playlists found",
+                style = MaterialTheme.typography.bodySmall,
+                color = MusColors.OnBackgroundTertiary,
+                modifier = Modifier.padding(horizontal = Spacing.base),
+            )
+        } else {
+            LazyRow(
+                contentPadding = PaddingValues(horizontal = Spacing.base),
+                horizontalArrangement = Arrangement.spacedBy(Spacing.md),
+                modifier = Modifier.padding(bottom = Spacing.sm),
+            ) {
+                items(playlists, key = { it.id }) { playlist ->
+                    YtPlaylistCard(playlist = playlist, onClick = { onPlaylistClick(playlist) })
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun YtPlaylistCard(
+    playlist: YouTubePlaylistSummary,
+    onClick: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .width(120.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .clickable(onClick = onClick)
+            .padding(4.dp),
+    ) {
+        Box(
+            modifier = Modifier
+                .size(112.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(MusColors.SurfaceVariant),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                Icons.AutoMirrored.Rounded.QueueMusic,
+                contentDescription = null,
+                tint = MusColors.OnBackgroundTertiary,
+                modifier = Modifier.size(32.dp),
+            )
+            if (!playlist.artworkUrl.isNullOrBlank()) {
+                AsyncImage(
+                    model = playlist.artworkUrl,
+                    contentDescription = playlist.title,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            }
+        }
+        Spacer(Modifier.height(Spacing.xs))
+        Text(
+            text = playlist.title,
+            style = MaterialTheme.typography.labelMedium,
+            color = MusColors.OnBackground,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Text(
+            text = playlist.trackCountText ?: playlist.author.orEmpty(),
+            style = MaterialTheme.typography.labelSmall,
+            color = MusColors.OnBackgroundTertiary,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+/**
+ * Tracks of one YouTube Music playlist. Tap a row to stream it with the rest
+ * of the playlist as the queue; the per-row menu opens the shared online
+ * result sheet (play / add to queue / download / planning list).
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun YtPlaylistTracksSheet(
+    selection: com.mus.android.ui.viewmodel.YtPlaylistSelection,
+    isLoading: Boolean,
+    onDismiss: () -> Unit,
+    onTrackClick: (OnlineSearchResult) -> Unit,
+    onTrackMenuClick: (OnlineSearchResult) -> Unit,
+    onPlayAll: () -> Unit,
+) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        containerColor = MusColors.SurfaceElevated,
+    ) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = Spacing.lg, vertical = Spacing.sm),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = selection.playlist.title,
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MusColors.OnBackground,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        text = listOfNotNull(
+                            selection.playlist.author,
+                            selection.playlist.trackCountText,
+                        ).joinToString(" • ").ifBlank { "YouTube Music playlist" },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MusColors.OnBackgroundTertiary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                OutlinedButton(
+                    onClick = onPlayAll,
+                    enabled = selection.tracks.isNotEmpty(),
+                    shape = RoundedCornerShape(8.dp),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = MusColors.OnBackground),
+                ) {
+                    Icon(Icons.Rounded.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(Spacing.xs))
+                    Text("Play all", style = MaterialTheme.typography.labelMedium)
+                }
+            }
+
+            if (isLoading) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(120.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    CircularProgressIndicator(color = MusColors.OnBackground, strokeWidth = 2.dp)
+                }
+            } else if (selection.tracks.isEmpty()) {
+                Text(
+                    "Couldn't load this playlist's tracks",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MusColors.OnBackgroundTertiary,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(Spacing.lg),
+                    textAlign = TextAlign.Center,
+                )
+            } else {
+                LazyColumn(
+                    modifier = Modifier.fillMaxWidth(),
+                    contentPadding = PaddingValues(bottom = 120.dp),
+                ) {
+                    items(selection.tracks, key = { it.id }) { track ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Box(modifier = Modifier.weight(1f)) {
+                                OnlineTrackRow(
+                                    result = track,
+                                    onClick = { onTrackClick(track) },
+                                )
+                            }
+                            IconButton(onClick = { onTrackMenuClick(track) }) {
+                                Icon(
+                                    Icons.Rounded.MoreVert,
+                                    contentDescription = "More actions",
+                                    tint = MusColors.OnBackgroundTertiary,
+                                    modifier = Modifier.size(18.dp),
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }

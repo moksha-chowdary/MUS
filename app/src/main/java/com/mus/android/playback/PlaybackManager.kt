@@ -11,7 +11,9 @@ import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
+import com.mus.android.data.enrichment.provider.OnlineSearchResult
 import com.mus.android.data.model.Track
+import com.mus.android.data.music.InnerTubeMusicApi
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -25,6 +27,7 @@ import javax.inject.Singleton
 class PlaybackManager @Inject constructor(
     @ApplicationContext private val context: Context,
     private val repositoryProvider: javax.inject.Provider<com.mus.android.data.repository.MusicRepository>,
+    private val innerTube: dagger.Lazy<InnerTubeMusicApi>,
 ) {
     private var mediaController: MediaController? = null
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
@@ -253,6 +256,45 @@ class PlaybackManager @Inject constructor(
             _repeatMode.value = next
         }
     }
+
+    // ── Online (YouTube Music) playback ──────────────────────
+
+    /**
+     * Plays a remote YouTube Music result (and optionally a remote queue).
+     * Tracks are converted to in-memory [Track]s with a stable negative id
+     * and a `yt://<videoId>` URI; the playback service's
+     * [YtPlaybackResolver] resolves the real stream URL at open time.
+     */
+    fun playOnline(result: OnlineSearchResult, queue: List<OnlineSearchResult> = listOf(result)) {
+        val tracks = queue.map { it.toRemoteTrack() }
+        playTrack(result.toRemoteTrack(), tracks, QueueContext(source = QueueSource.ONLINE))
+        // Opportunistic prefetch: warms the InnerTube stream cache so the
+        // first tap starts faster. Fire-and-forget; never blocks the UI.
+        tracks.take(2).forEach { track ->
+            YtPlaybackResolver.videoIdOf(Uri.parse(track.uri))?.let { videoId ->
+                scope.launch(Dispatchers.IO) {
+                    runCatching { innerTube.get().prefetchStream(videoId) }
+                }
+            }
+        }
+    }
+
+    fun addOnlineToQueue(result: OnlineSearchResult) {
+        addToQueue(result.toRemoteTrack())
+    }
+
+    private fun OnlineSearchResult.toRemoteTrack(): Track = Track(
+        id = YtPlaybackResolver.remoteTrackId(sourceId.ifBlank { id }),
+        title = title.ifBlank { "Unknown title" },
+        artist = artist.ifBlank { "Unknown artist" },
+        albumId = 0L,
+        albumTitle = album.orEmpty(),
+        duration = durationMs,
+        uri = "${YtPlaybackResolver.YT_SCHEME}://${sourceId.ifBlank { id }}",
+        artworkUri = artworkUrl,
+        bitrate = 0,
+        language = "Online",
+    )
 
     fun playNext(track: Track) {
         val controller = mediaController

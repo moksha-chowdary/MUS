@@ -1,5 +1,3 @@
-import java.util.Properties
-
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -12,28 +10,33 @@ android {
     namespace = "com.mus.android"
     compileSdk = 35
 
+    signingConfigs {
+        create("port") {
+            storeFile = rootProject.file("mus-port.keystore")
+            storePassword = "musport2024"
+            keyAlias = "musport"
+            keyPassword = "musport2024"
+        }
+    }
+
     defaultConfig {
-        applicationId = "com.mus.android"
+        // Fresh applicationId — avoids INSTALL_FAILED_UPDATE_INCOMPATIBLE against any
+        // previously installed MUS build (original releases or older port builds).
+        applicationId = "com.mus.android.yt"
         minSdk = 28
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 3
+        versionName = "0.2.0-port"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
-        // Read optional YouTube API credentials from local.properties (never committed to VCS)
-        val localProps = Properties()
-        val localPropsFile = rootProject.file("local.properties")
-        if (localPropsFile.exists()) localProps.load(localPropsFile.inputStream())
-
         buildConfigField("String", "MUS_BACKEND_URL", "\"https://api.mus.local\"")
-        buildConfigField("String", "YOUTUBE_API_KEY", "\"${localProps.getProperty("youtube.api.key", "")}\"")
-        buildConfigField("String", "YOUTUBE_OAUTH_CLIENT_ID", "\"${localProps.getProperty("youtube.oauth.client_id", "")}\"")
     }
 
     buildTypes {
         release {
             isMinifyEnabled = true
+            signingConfig = signingConfigs.getByName("port")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -41,7 +44,7 @@ android {
         }
         debug {
             isMinifyEnabled = false
-            applicationIdSuffix = ".debug"
+            signingConfig = signingConfigs.getByName("port")
         }
     }
 
@@ -111,6 +114,12 @@ dependencies {
 
     // DataStore
     implementation(libs.androidx.datastore.preferences)
+
+    // YouTube Music mechanism (ported from LastWave): InnerTube client,
+    // PoToken minter, stream resolution, download pipeline
+    implementation(libs.okhttp)
+    implementation(libs.kotlinx.serialization.json)
+    implementation(libs.newpipe.extractor)
 
     // Unit Testing
     testImplementation(libs.junit)

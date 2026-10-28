@@ -11,6 +11,12 @@ import dagger.Provides
 import dagger.hilt.InstallIn
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import okhttp3.OkHttpClient
+import java.util.concurrent.TimeUnit
+import javax.inject.Named
 import javax.inject.Singleton
 
 @Module
@@ -25,7 +31,12 @@ object AppModule {
             MusDatabase::class.java,
             "mus_database"
         )
-            .addMigrations(MusDatabase.MIGRATION_3_4, MusDatabase.MIGRATION_4_5, MusDatabase.MIGRATION_5_6)
+            .addMigrations(
+                MusDatabase.MIGRATION_3_4,
+                MusDatabase.MIGRATION_4_5,
+                MusDatabase.MIGRATION_5_6,
+                MusDatabase.MIGRATION_6_7,
+            )
             .fallbackToDestructiveMigration()
             .build()
     }
@@ -37,6 +48,29 @@ object AppModule {
     @Provides fun provideWaveformDao(db: MusDatabase): WaveformDao = db.waveformDao()
     @Provides fun providePaletteDao(db: MusDatabase): PaletteDao = db.paletteDao()
     @Provides fun provideDownloadQueueDao(db: MusDatabase): com.mus.android.data.db.DownloadQueueDao = db.downloadQueueDao()
+    @Provides fun provideDownloadedTrackDao(db: MusDatabase): DownloadedTrackDao = db.downloadedTrackDao()
+
+    /** Shared application-lifetime scope for downloads and startup jobs. */
+    @Provides
+    @Singleton
+    @Named("applicationScope")
+    fun provideApplicationScope(): CoroutineScope =
+        CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    /**
+     * Shared HTTP client for the InnerTube client, NewPipe extractor and the
+     * download pipeline (ported from LastWave's NetworkModule).
+     */
+    @Provides
+    @Singleton
+    fun provideOkHttpClient(): OkHttpClient {
+        return OkHttpClient.Builder()
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(20, TimeUnit.SECONDS)
+            .writeTimeout(20, TimeUnit.SECONDS)
+            .callTimeout(60, TimeUnit.SECONDS)
+            .build()
+    }
 
     @Provides
     @Singleton

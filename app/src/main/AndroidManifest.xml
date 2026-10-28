@@ -13,6 +13,16 @@
     <uses-permission
         android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32" />
+    <!-- Legacy write grant (Android 10 devices) so downloads can land in /Muzic/ -->
+    <uses-permission
+        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="29" />
+    <!-- All files access: lets the download pipeline write directly into the
+         user's /Muzic/ vault instead of the Music collection. Side-loaded app;
+         grant via Settings. -->
+    <uses-permission
+        android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
+        tools:ignore="ScopedStorage" />
     <!-- Nothing Glyph (conditional — only functions on Nothing devices) -->
     <uses-permission android:name="com.nothing.ketchum.permission.ENABLE"
         tools:ignore="PermissionImpliesUnsupportedHardware" />
@@ -20,6 +30,7 @@
     <application
         android:name=".MusApplication"
         android:allowBackup="true"
+        android:requestLegacyExternalStorage="true"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:label="MUS"
@@ -37,6 +48,10 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <receiver
+            android:name=".data.download.DownloadCancelReceiver"
+            android:exported="false" />
 
         <service
             android:name=".playback.MusPlaybackService"

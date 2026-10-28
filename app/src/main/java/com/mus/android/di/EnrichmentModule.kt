@@ -4,9 +4,9 @@ import com.mus.android.data.enrichment.provider.ArtworkSearchProvider
 import com.mus.android.data.enrichment.provider.ITunesArtworkSearchProvider
 import com.mus.android.data.enrichment.provider.ITunesMetadataProvider
 import com.mus.android.data.enrichment.provider.ITunesOnlineSearchProvider
+import com.mus.android.data.enrichment.provider.InnerTubeMusicSearchProvider
 import com.mus.android.data.enrichment.provider.MetadataProvider
 import com.mus.android.data.enrichment.provider.OnlineMusicSearchProvider
-import com.mus.android.data.enrichment.provider.YouTubeMusicSearchProvider
 import dagger.Binds
 import dagger.Module
 import dagger.hilt.InstallIn
@@ -36,8 +36,8 @@ abstract class EnrichmentModule {
     @Binds
     @IntoSet
     @Singleton
-    abstract fun bindYouTubeSearchProvider(
-        provider: YouTubeMusicSearchProvider
+    abstract fun bindInnerTubeSearchProvider(
+        provider: InnerTubeMusicSearchProvider
     ): OnlineMusicSearchProvider
 
     @Binds

@@ -4,6 +4,7 @@ import androidx.room.Database
 import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
+import com.mus.android.data.db.DownloadedTrackEntity
 import com.mus.android.data.model.*
 
 @Database(
@@ -16,8 +17,9 @@ import com.mus.android.data.model.*
         WaveformData::class,
         ArtworkPalette::class,
         DownloadQueueItem::class,
+        DownloadedTrackEntity::class,
     ],
-    version = 6,
+    version = 7,
     exportSchema = false
 )
 abstract class MusDatabase : RoomDatabase() {
@@ -28,6 +30,7 @@ abstract class MusDatabase : RoomDatabase() {
     abstract fun waveformDao(): WaveformDao
     abstract fun paletteDao(): PaletteDao
     abstract fun downloadQueueDao(): DownloadQueueDao
+    abstract fun downloadedTrackDao(): DownloadedTrackDao
 
     companion object {
         val MIGRATION_3_4 = object : Migration(3, 4) {
@@ -77,6 +80,39 @@ abstract class MusDatabase : RoomDatabase() {
                         status TEXT NOT NULL
                     )
                     """.trimIndent()
+                )
+            }
+        }
+        /**
+         * v6 → v7: Room trackKey index for downloaded YouTube Music tracks.
+         * Creates the downloaded_tracks table with a UNIQUE trackKey column
+         * (normalized "${'$'}{artist}_${'$'}{title}") so duplicate downloads REPLACE
+         * the existing row instead of creating a second one.
+         */
+        val MIGRATION_6_7 = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS downloaded_tracks (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        trackKey TEXT NOT NULL DEFAULT '',
+                        title TEXT NOT NULL,
+                        artist TEXT NOT NULL,
+                        album TEXT NOT NULL DEFAULT '',
+                        artworkUrl TEXT,
+                        filePath TEXT NOT NULL,
+                        mediaStoreUri TEXT,
+                        fileSizeBytes INTEGER NOT NULL DEFAULT 0,
+                        formatBadge TEXT NOT NULL DEFAULT 'AUDIO',
+                        durationMs INTEGER NOT NULL DEFAULT 0,
+                        bitrateKbps INTEGER,
+                        isLossless INTEGER NOT NULL DEFAULT 0,
+                        downloadedAtMillis INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS index_downloaded_tracks_trackKey ON downloaded_tracks(trackKey)"
                 )
             }
         }

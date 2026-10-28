@@ -2,6 +2,8 @@ package com.mus.android.ui.screens
 
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
+import android.os.Environment
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -22,20 +24,30 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.LifecycleResumeEffect
+import com.mus.android.ui.components.CookiePasteDialog
+import com.mus.android.ui.components.YouTubeLoginDialog
 import com.mus.android.ui.theme.MusColors
 import com.mus.android.ui.theme.Spacing
 import com.mus.android.ui.viewmodel.HomeViewModel
+import com.mus.android.ui.viewmodel.YtAccountViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
     onBack: () -> Unit,
     homeViewModel: HomeViewModel = hiltViewModel(),
+    ytAccountViewModel: YtAccountViewModel = hiltViewModel(),
 ) {
     val context = LocalContext.current
     val isLoading by homeViewModel.isLoading.collectAsState()
     val albums by homeViewModel.albums.collectAsState()
     val recentlyAdded by homeViewModel.recentlyAdded.collectAsState()
+
+    val ytConnection by ytAccountViewModel.connection.collectAsState()
+    var showYtLoginDialog by remember { mutableStateOf(false) }
+    var showCookiePasteDialog by remember { mutableStateOf(false) }
+    var cookiePasteError by remember { mutableStateOf<String?>(null) }
 
     val folderPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocumentTree()
@@ -212,6 +224,37 @@ fun SettingsScreen(
                 }
             )
 
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                var allFilesGranted by remember {
+                    mutableStateOf(Environment.isExternalStorageManager())
+                }
+                LifecycleResumeEffect(Unit) {
+                    allFilesGranted = Environment.isExternalStorageManager()
+                    onPauseOrDispose { }
+                }
+                SettingsActionItem(
+                    icon = if (allFilesGranted) Icons.Rounded.FolderSpecial else Icons.Rounded.Folder,
+                    title = if (allFilesGranted) "All Files Access — Granted" else "Allow All Files Access",
+                    subtitle = if (allFilesGranted) "Downloads land directly in your /Muzic/ folder"
+                        else "Required so downloads land directly in your /Muzic/ folder",
+                    onClick = {
+                        if (!allFilesGranted) {
+                            val launched = runCatching {
+                                context.startActivity(
+                                    Intent(
+                                        Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                                        Uri.fromParts("package", context.packageName, null)
+                                    )
+                                )
+                            }.isSuccess
+                            if (!launched) {
+                                runCatching { context.startActivity(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)) }
+                            }
+                        }
+                    }
+                )
+            }
+
             Spacer(Modifier.height(Spacing.xl))
 
             // Playback Preferences
@@ -277,6 +320,65 @@ fun SettingsScreen(
 
             Spacer(Modifier.height(Spacing.xl))
 
+            // YouTube Music Account Section (cookie auth — ported from LastWave)
+            SettingsSectionHeader("YouTube Music Account")
+
+            Card(
+                colors = CardDefaults.cardColors(containerColor = MusColors.SurfaceVariant),
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Column(modifier = Modifier.padding(Spacing.md)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            Icons.Rounded.AccountCircle,
+                            contentDescription = null,
+                            tint = MusColors.OnBackground,
+                            modifier = Modifier.size(24.dp),
+                        )
+                        Spacer(Modifier.width(Spacing.sm))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                if (ytConnection.isConnected) "Connected"
+                                else "Not connected",
+                                style = MaterialTheme.typography.titleSmall,
+                                color = MusColors.OnBackground,
+                            )
+                            Text(
+                                if (ytConnection.isConnected)
+                                    "${ytConnection.accountName} — library, likes and history use your account"
+                                else
+                                    "Sign in to browse YouTube Music with your account (optional)",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MusColors.OnBackgroundSecondary,
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(Spacing.sm))
+                    Row(horizontalArrangement = Arrangement.spacedBy(Spacing.sm)) {
+                        if (!ytConnection.isConnected) {
+                            Button(onClick = { showYtLoginDialog = true }) {
+                                Text("Sign in")
+                            }
+                            OutlinedButton(onClick = {
+                                cookiePasteError = null
+                                showCookiePasteDialog = true
+                            }) {
+                                Text("Paste cookies")
+                            }
+                        } else {
+                            OutlinedButton(onClick = {
+                                ytAccountViewModel.signOut()
+                            }) {
+                                Text("Sign out")
+                            }
+                        }
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(Spacing.xl))
+
             // About Section
             SettingsSectionHeader("About")
 
@@ -308,6 +410,35 @@ fun SettingsScreen(
 
             Spacer(Modifier.height(100.dp))
         }
+    }
+
+    if (showYtLoginDialog) {
+        YouTubeLoginDialog(
+            onDismiss = { showYtLoginDialog = false },
+            onCookiesCaptured = { cookies ->
+                showYtLoginDialog = false
+                ytAccountViewModel.connectCookies(cookies) { ok, message ->
+                    android.widget.Toast.makeText(context, message, android.widget.Toast.LENGTH_SHORT).show()
+                }
+            },
+        )
+    }
+
+    if (showCookiePasteDialog) {
+        CookiePasteDialog(
+            onDismiss = { showCookiePasteDialog = false },
+            error = cookiePasteError,
+            onSubmit = { raw ->
+                ytAccountViewModel.connectCookies(raw) { ok, message ->
+                    if (ok) {
+                        showCookiePasteDialog = false
+                        android.widget.Toast.makeText(context, message, android.widget.Toast.LENGTH_SHORT).show()
+                    } else {
+                        cookiePasteError = message
+                    }
+                }
+            },
+        )
     }
 }
 

@@ -10,6 +10,7 @@ enum class QueueSource {
     PLAYLIST,
     LANGUAGE_MIX,
     SEARCH,
+    ONLINE,
 }
 
 data class QueueContext(
