@@ -41,35 +41,24 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.mus.android.R
-import com.mus.android.data.enrichment.provider.OnlineSearchResult
 import com.mus.android.data.model.Track
-import com.mus.android.data.music.HomeShelfItem
 import com.mus.android.ui.components.AlbumCard
 import com.mus.android.ui.components.AppleIconButton
 import com.mus.android.ui.components.AppleLargeTitleList
-import com.mus.android.ui.components.CatalogPlaylistCard
-import com.mus.android.ui.components.CatalogSongCard
-import com.mus.android.ui.components.OnlineResultOverlay
-import com.mus.android.ui.components.PlaylistCard
 import com.mus.android.ui.components.SectionHeader
-import com.mus.android.ui.components.Shelf
 import com.mus.android.ui.components.SongMenuContainer
 import com.mus.android.ui.components.TrackRow
-import com.mus.android.ui.components.YtPlaylistCard
-import com.mus.android.ui.components.YtPlaylistTracksSheet
 import com.mus.android.ui.theme.MusColors
 import com.mus.android.ui.theme.Spacing
-import com.mus.android.ui.viewmodel.DiscoveryViewModel
 import com.mus.android.ui.viewmodel.HomeViewModel
 import com.mus.android.ui.viewmodel.PermissionState
 
 /**
- * Apple Music–style "Listen Now" home.
+ * Apple Music–style "Listen Now" home — classic MUS layout.
  *
- * The YouTube Music catalogue is the primary source: its home-feed shelves render first,
- * followed by the signed-in account's YT playlists, then the local library content
- * (Quick Picks, Recently Added, Albums, Collections). Background gradients and the
- * dark MUS palette are unchanged.
+ * Two shelves only: Quick Picks and Your Albums. The large title sits below the
+ * status bar and collapses into the translucent compact bar on scroll.
+ * Background gradients and the dark MUS palette are unchanged.
  */
 @Composable
 fun HomeScreen(
@@ -78,29 +67,19 @@ fun HomeScreen(
     onSettingsClick: () -> Unit = {},
     onTrackClick: (Track, List<Track>) -> Unit,
     viewModel: HomeViewModel = hiltViewModel(),
-    discoveryViewModel: DiscoveryViewModel = hiltViewModel(),
 ) {
     val isLoading by viewModel.isLoading.collectAsState()
     val needsPermission by viewModel.needsPermission.collectAsState()
     val permissionState by viewModel.permissionState.collectAsState()
     val tracks by viewModel.tracks.collectAsState()
     val errorMessage by viewModel.errorMessage.collectAsState()
-    val recentlyAdded by viewModel.recentlyAdded.collectAsState()
     val albums by viewModel.albums.collectAsState()
-    val playlists by viewModel.playlists.collectAsState()
     val quickPicks by viewModel.quickPicks.collectAsState()
 
     val quickPickPages = remember(quickPicks) { quickPicks.chunked(4) }
     val quickPickPagerState = rememberPagerState(pageCount = { quickPickPages.size })
 
     var selectedTrackForMenu by remember { mutableStateOf<Track?>(null) }
-
-    // Catalogue state (YT Music primary catalogue + account playlists)
-    val homeShelves by discoveryViewModel.homeShelves.collectAsState()
-    val ytPlaylists by discoveryViewModel.ytPlaylists.collectAsState()
-    val selectedYtPlaylist by discoveryViewModel.selectedYtPlaylist.collectAsState()
-    val ytPlaylistLoading by discoveryViewModel.ytPlaylistLoading.collectAsState()
-    var catalogResult by remember { mutableStateOf<OnlineSearchResult?>(null) }
 
     val context = LocalContext.current
     val activity = context as? Activity
@@ -310,11 +289,6 @@ fun HomeScreen(
             }
 
             else -> {
-                LaunchedEffect(Unit) {
-                    discoveryViewModel.loadHomeFeedIfEmpty()
-                    discoveryViewModel.loadYtPlaylistsIfConnected()
-                }
-
                 AppleLargeTitleList(
                     title = "Listen Now",
                     trailing = {
@@ -327,56 +301,7 @@ fun HomeScreen(
                         )
                     },
                 ) {
-                    // ── 1. YT MUSIC CATALOGUE — the primary source ──────────────
-                    homeShelves.forEach { shelf ->
-                        if (shelf.items.isEmpty()) return@forEach
-                        item(key = "cat_${shelf.title}") {
-                            Shelf(title = shelf.title) {
-                                items(shelf.items.size) { index ->
-                                    when (val item = shelf.items[index]) {
-                                        is HomeShelfItem.Track -> CatalogSongCard(
-                                            track = item.track,
-                                            onClick = {
-                                                catalogResult = discoveryViewModel.asOnlineResult(item.track)
-                                            },
-                                        )
-                                        is HomeShelfItem.Playlist -> CatalogPlaylistCard(
-                                            playlist = item.playlist,
-                                            onClick = { discoveryViewModel.openYtPlaylist(item.playlist) },
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                        item(key = "cat_gap_${shelf.title}") { Spacer(Modifier.height(Spacing.xl)) }
-                    }
-
-                    // ── 2. YOUR YOUTUBE MUSIC PLAYLISTS ──────────────────────────
-                    if (ytPlaylists.isNotEmpty()) {
-                        item(key = "yt_pl_header") {
-                            SectionHeader(
-                                title = "Your YouTube Music playlists",
-                                modifier = Modifier.padding(top = Spacing.xs),
-                            )
-                            Spacer(Modifier.height(12.dp))
-                        }
-                        item(key = "yt_pl_row") {
-                            LazyRow(
-                                contentPadding = PaddingValues(horizontal = 20.dp),
-                                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                            ) {
-                                items(ytPlaylists, key = { it.id }) { playlist ->
-                                    YtPlaylistCard(
-                                        playlist = playlist,
-                                        onClick = { discoveryViewModel.openYtPlaylist(playlist) },
-                                    )
-                                }
-                            }
-                        }
-                        item(key = "yt_pl_gap") { Spacer(Modifier.height(Spacing.xl)) }
-                    }
-
-                    // ── 3. QUICK PICKS (local) ───────────────────────────────────
+                    // ── QUICK PICKS ─────────────────────────────────────────────
                     if (quickPicks.isNotEmpty()) {
                         item(key = "qp_header") {
                             Row(
@@ -450,26 +375,7 @@ fun HomeScreen(
                         item(key = "qp_gap") { Spacer(Modifier.height(Spacing.xl)) }
                     }
 
-                    // ── 4. RECENTLY ADDED (local) ────────────────────────────────
-                    if (recentlyAdded.isNotEmpty()) {
-                        item(key = "ra_header") {
-                            SectionHeader("Recently Added")
-                            Spacer(Modifier.height(Spacing.xs))
-                        }
-                        items(
-                            recentlyAdded.take(4),
-                            key = { "ra_${it.id}" },
-                        ) { track ->
-                            TrackRow(
-                                track = track,
-                                onClick = { onTrackClick(track, recentlyAdded) },
-                                onMoreClick = { selectedTrackForMenu = track },
-                            )
-                        }
-                        item(key = "ra_gap") { Spacer(Modifier.height(Spacing.xl)) }
-                    }
-
-                    // ── 5. YOUR ALBUMS (local) ───────────────────────────────────
+                    // ── YOUR ALBUMS ────────────────────────────────────────────
                     if (albums.isNotEmpty()) {
                         item(key = "al_header") {
                             SectionHeader("Your Albums")
@@ -493,46 +399,8 @@ fun HomeScreen(
                         item(key = "al_gap") { Spacer(Modifier.height(Spacing.xl)) }
                     }
 
-                    // ── 6. COLLECTIONS (local playlists incl. Telugu / Hindi) ────
-                    if (playlists.isNotEmpty()) {
-                        item(key = "col_header") {
-                            SectionHeader("Collections")
-                            Spacer(Modifier.height(12.dp))
-                        }
-                        item(key = "col_row") {
-                            LazyRow(
-                                contentPadding = PaddingValues(horizontal = 20.dp),
-                                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                            ) {
-                                items(playlists, key = { it.id }) { pl ->
-                                    PlaylistCard(
-                                        name = pl.name,
-                                        onClick = { onPlaylistClick(pl.id) },
-                                    )
-                                }
-                            }
-                        }
-                        item(key = "col_gap") { Spacer(Modifier.height(Spacing.xl)) }
-                    }
                 }
             }
-        }
-
-        // Catalogue song actions (play / queue / FLAC download / add to collection)
-        OnlineResultOverlay(
-            result = catalogResult,
-            onDismiss = { catalogResult = null },
-            discovery = discoveryViewModel,
-        )
-
-        // Opened YT playlist (account or catalogue) with its tracks
-        selectedYtPlaylist?.let { selection ->
-            YtPlaylistTracksSheet(
-                selection = selection,
-                isLoading = ytPlaylistLoading,
-                onDismiss = { discoveryViewModel.closeYtPlaylist() },
-                discovery = discoveryViewModel,
-            )
         }
 
         SongMenuContainer(

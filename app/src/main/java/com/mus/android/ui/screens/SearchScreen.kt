@@ -37,6 +37,10 @@ import com.mus.android.ui.components.OnlineTrackRow
 import com.mus.android.ui.components.SectionHeader
 import com.mus.android.ui.components.SongMenuContainer
 import com.mus.android.ui.components.TrackRow
+import com.mus.android.ui.components.YtAlbumCard
+import com.mus.android.ui.components.YtAlbumPageSheet
+import com.mus.android.ui.components.YtArtistCard
+import com.mus.android.ui.components.YtArtistPageSheet
 import com.mus.android.ui.components.YtPlaylistCard
 import com.mus.android.ui.components.YtPlaylistTracksSheet
 import com.mus.android.ui.theme.FootnoteStyle
@@ -74,10 +78,16 @@ fun SearchScreen(
 
     // Online (YT Music) state
     val onlineResults by discoveryViewModel.onlineResults.collectAsState()
+    val onlineAlbums by discoveryViewModel.onlineAlbums.collectAsState()
+    val onlineArtists by discoveryViewModel.onlineArtists.collectAsState()
     val isSearching by discoveryViewModel.isSearching.collectAsState()
     val ytPlaylists by discoveryViewModel.ytPlaylists.collectAsState()
     val selectedYtPlaylist by discoveryViewModel.selectedYtPlaylist.collectAsState()
     val ytPlaylistLoading by discoveryViewModel.ytPlaylistLoading.collectAsState()
+    val selectedYtAlbum by discoveryViewModel.selectedYtAlbum.collectAsState()
+    val ytAlbumLoading by discoveryViewModel.ytAlbumLoading.collectAsState()
+    val selectedYtArtist by discoveryViewModel.selectedYtArtist.collectAsState()
+    val ytArtistLoading by discoveryViewModel.ytArtistLoading.collectAsState()
     val downloadedKeys by discoveryViewModel.downloadedKeys.collectAsState()
     val pendingDownloadCount by discoveryViewModel.pendingDownloadCount.collectAsState()
 
@@ -289,6 +299,54 @@ fun SearchScreen(
                         ),
                     )
                 }
+
+                // ── ALBUMS (Apple Music–style section) ──────────────────────
+                if (onlineAlbums.isNotEmpty()) {
+                    item(key = "online_albums_header") {
+                        SectionHeader(
+                            title = "Albums",
+                            modifier = Modifier.padding(top = Spacing.lg),
+                        )
+                        Spacer(Modifier.height(12.dp))
+                    }
+                    item(key = "online_albums_row") {
+                        LazyRow(
+                            contentPadding = PaddingValues(horizontal = 20.dp),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            items(onlineAlbums, key = { it.browseId }) { album ->
+                                YtAlbumCard(
+                                    entity = album,
+                                    onClick = { discoveryViewModel.openYtAlbum(album) },
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // ── ARTISTS (Apple Music–style section) ─────────────────────
+                if (onlineArtists.isNotEmpty()) {
+                    item(key = "online_artists_header") {
+                        SectionHeader(
+                            title = "Artists",
+                            modifier = Modifier.padding(top = Spacing.lg),
+                        )
+                        Spacer(Modifier.height(12.dp))
+                    }
+                    item(key = "online_artists_row") {
+                        LazyRow(
+                            contentPadding = PaddingValues(horizontal = 20.dp),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            items(onlineArtists, key = { it.browseId }) { artist ->
+                                YtArtistCard(
+                                    entity = artist,
+                                    onClick = { discoveryViewModel.openYtArtist(artist) },
+                                )
+                            }
+                        }
+                    }
+                }
                 item(key = "online_bottom_gap") { Spacer(Modifier.height(Spacing.xl)) }
             }
         } else {
@@ -398,6 +456,26 @@ fun SearchScreen(
             selection = selection,
             isLoading = ytPlaylistLoading,
             onDismiss = { discoveryViewModel.closeYtPlaylist() },
+            discovery = discoveryViewModel,
+        )
+    }
+
+    // Opened YT album page (from search Albums section or artist page shelves)
+    selectedYtAlbum?.let { page ->
+        YtAlbumPageSheet(
+            page = page,
+            isLoading = ytAlbumLoading,
+            onDismiss = { discoveryViewModel.closeYtAlbum() },
+            discovery = discoveryViewModel,
+        )
+    }
+
+    // Opened YT artist page (popular songs + album shelves)
+    selectedYtArtist?.let { page ->
+        YtArtistPageSheet(
+            page = page,
+            isLoading = ytArtistLoading,
+            onDismiss = { discoveryViewModel.closeYtArtist() },
             discovery = discoveryViewModel,
         )
     }

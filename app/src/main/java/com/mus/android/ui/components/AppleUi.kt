@@ -98,6 +98,9 @@ fun AppleLargeTitleList(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
+                        // Sit below the status bar — the list is edge-to-edge, so without
+                        // this inset the large title collides with the clock/battery icons.
+                        .statusBarsPadding()
                         .padding(start = 20.dp, end = 12.dp, top = 10.dp, bottom = 4.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {

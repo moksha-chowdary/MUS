@@ -6,6 +6,8 @@ import com.mus.android.data.db.DownloadedTrackDao
 import com.mus.android.data.download.TrackDownloadManager
 import com.mus.android.data.enrichment.provider.OnlineMusicSearchProvider
 import com.mus.android.data.enrichment.provider.OnlineSearchResult
+import com.mus.android.data.model.AlbumPageData
+import com.mus.android.data.model.ArtistPageData
 import com.mus.android.data.model.DownloadQueueItem
 import com.mus.android.data.model.DownloadStatus
 import com.mus.android.data.model.Playlist
@@ -13,14 +15,18 @@ import com.mus.android.data.model.Track
 import com.mus.android.data.music.HomePage
 import com.mus.android.data.music.HomeShelf
 import com.mus.android.data.music.InnerTubeMusicApi
+import com.mus.android.data.music.YouTubeMusicEntity
 import com.mus.android.data.music.YouTubeMusicTrack
 import com.mus.android.data.music.YouTubePlaylistSummary
 import com.mus.android.data.repository.MusicRepository
 import com.mus.android.data.ytmusic.YtMusicAuthManager
+import com.mus.android.playback.PlayableTrack
 import com.mus.android.playback.PlaybackManager
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -60,6 +66,13 @@ class DiscoveryViewModel @Inject constructor(
 
     private val _isSearching = MutableStateFlow(false)
     val isSearching: StateFlow<Boolean> = _isSearching.asStateFlow()
+
+    /** Albums / artists matched by the online search — Apple Music–style sections. */
+    private val _onlineAlbums = MutableStateFlow<List<YouTubeMusicEntity>>(emptyList())
+    val onlineAlbums: StateFlow<List<YouTubeMusicEntity>> = _onlineAlbums.asStateFlow()
+
+    private val _onlineArtists = MutableStateFlow<List<YouTubeMusicEntity>>(emptyList())
+    val onlineArtists: StateFlow<List<YouTubeMusicEntity>> = _onlineArtists.asStateFlow()
 
     val downloadQueue: StateFlow<List<DownloadQueueItem>> = repository.getDownloadQueue()
         .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
@@ -141,6 +154,80 @@ class DiscoveryViewModel @Inject constructor(
         _selectedYtPlaylist.value = null
     }
 
+    // ── YT Music album / artist pages (opened from search results) ───────
+
+    private val _selectedYtAlbum = MutableStateFlow<AlbumPageData?>(null)
+    val selectedYtAlbum: StateFlow<AlbumPageData?> = _selectedYtAlbum.asStateFlow()
+
+    private val _ytAlbumLoading = MutableStateFlow(false)
+    val ytAlbumLoading: StateFlow<Boolean> = _ytAlbumLoading.asStateFlow()
+
+    private val _selectedYtArtist = MutableStateFlow<ArtistPageData?>(null)
+    val selectedYtArtist: StateFlow<ArtistPageData?> = _selectedYtArtist.asStateFlow()
+
+    private val _ytArtistLoading = MutableStateFlow(false)
+    val ytArtistLoading: StateFlow<Boolean> = _ytArtistLoading.asStateFlow()
+
+    /** Opens a YT Music album page (from search results or an artist's album shelf). */
+    fun openYtAlbum(entity: YouTubeMusicEntity) {
+        if (entity.browseId.isBlank() || _ytAlbumLoading.value) return
+        _ytAlbumLoading.value = true
+        viewModelScope.launch {
+            val page = withContext(Dispatchers.IO) {
+                runCatching {
+                    innerTube.fetchAlbumPage(entity.browseId, entity.name, entity.artist ?: "")
+                }.getOrNull()
+            }
+            _selectedYtAlbum.value = page
+            _ytAlbumLoading.value = false
+        }
+    }
+
+    fun closeYtAlbum() {
+        _selectedYtAlbum.value = null
+    }
+
+    /** Opens a YT Music artist page (top songs + album shelves). */
+    fun openYtArtist(entity: YouTubeMusicEntity) {
+        if (entity.browseId.isBlank() || _ytArtistLoading.value) return
+        _ytArtistLoading.value = true
+        viewModelScope.launch {
+            val page = withContext(Dispatchers.IO) {
+                runCatching {
+                    innerTube.fetchArtistPage(entity.browseId, entity.name)
+                }.getOrNull()
+            }
+            _selectedYtArtist.value = page
+            _ytArtistLoading.value = false
+        }
+    }
+
+    fun closeYtArtist() {
+        _selectedYtArtist.value = null
+    }
+
+    private fun PlayableTrack.toOnlineResult(): OnlineSearchResult = OnlineSearchResult(
+        id = videoId ?: internalTrackId ?: title,
+        title = title,
+        artist = artist,
+        album = album,
+        artworkUrl = artworkUrl,
+        source = "YouTube Music",
+        sourceId = videoId ?: "",
+        sourceUrl = videoId?.let { "https://music.youtube.com/watch?v=$it" } ?: "",
+        durationMs = durationMs ?: 0L,
+    )
+
+    /** Plays one track of a YT album/artist page, using the page's tracks as the queue. */
+    fun playYtPageTrack(tracks: List<PlayableTrack>, index: Int) {
+        if (index !in tracks.indices) return
+        val queue = tracks.map { it.toOnlineResult() }
+        playbackManager.playOnline(queue[index], queue)
+    }
+
+    /** Overlay actions (download / queue / collection) for a page track. */
+    fun pageTrackAsOnlineResult(track: PlayableTrack): OnlineSearchResult = track.toOnlineResult()
+
     /** Plays one playlist track with the rest of the playlist as the queue. */
     fun playYtPlaylistTrack(selection: YtPlaylistSelection, start: OnlineSearchResult) {
         playbackManager.playOnline(start, selection.tracks.ifEmpty { listOf(start) })
@@ -169,6 +256,8 @@ class DiscoveryViewModel @Inject constructor(
         searchJob?.cancel()
         if (q.isBlank()) {
             _onlineResults.value = emptyList()
+            _onlineAlbums.value = emptyList()
+            _onlineArtists.value = emptyList()
             return
         }
         searchJob = viewModelScope.launch {
@@ -181,6 +270,8 @@ class DiscoveryViewModel @Inject constructor(
         searchJob?.cancel()
         if (q.isBlank()) {
             _onlineResults.value = emptyList()
+            _onlineAlbums.value = emptyList()
+            _onlineArtists.value = emptyList()
             return
         }
         searchJob = viewModelScope.launch {
@@ -191,17 +282,27 @@ class DiscoveryViewModel @Inject constructor(
     private suspend fun performSearch(q: String) {
         _isSearching.value = true
         try {
-            val results = withContext(Dispatchers.IO) {
-                // Query all configured providers in parallel and merge results
-                providers.flatMap { provider ->
-                    try {
-                        provider.search(q, limit = 20)
-                    } catch (e: Exception) {
-                        emptyList()
+            coroutineScope {
+                val songs = async(Dispatchers.IO) {
+                    // Query all configured providers in parallel and merge results
+                    providers.flatMap { provider ->
+                        try {
+                            provider.search(q, limit = 20)
+                        } catch (e: Exception) {
+                            emptyList()
+                        }
                     }
                 }
+                val albums = async(Dispatchers.IO) {
+                    runCatching { innerTube.searchAlbums(q, limit = 12) }.getOrDefault(emptyList())
+                }
+                val artists = async(Dispatchers.IO) {
+                    runCatching { innerTube.searchArtists(q, limit = 12) }.getOrDefault(emptyList())
+                }
+                _onlineResults.value = songs.await()
+                _onlineAlbums.value = albums.await()
+                _onlineArtists.value = artists.await()
             }
-            _onlineResults.value = results
         } finally {
             _isSearching.value = false
         }

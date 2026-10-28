@@ -27,10 +27,10 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.media3.common.Player
 import coil.compose.AsyncImage
 import com.mus.android.ui.ambient.AmbientGradientBackground
-import com.mus.android.ui.components.AppleSlider
 import com.mus.android.ui.components.DepthCarousel
 import com.mus.android.ui.components.PlayPauseMorphButton
 import com.mus.android.ui.components.QualityBadge
+import com.mus.android.ui.components.WaveformSlider
 import com.mus.android.ui.components.formatDuration
 import com.mus.android.ui.theme.MusColors
 import com.mus.android.ui.theme.Spacing
@@ -431,6 +431,11 @@ fun NowPlayingScreen(
  * Isolated playback progress section: High-frequency position collection (~5Hz)
  * is strictly isolated here so that the NowPlayingScreen, artwork HorizontalPager,
  * metadata, ambient gradient, and controls do NOT recompose during playback ticks.
+ *
+ * Scrubber = real audio waveform of the CURRENT song, progressively revealed:
+ * the played portion draws the track's own waveform; the unplayed portion stays a
+ * flat baseline (straight line) until it is reached. Falls back to a pure flat
+ * line for tracks whose waveform can't be decoded (e.g. remote streams).
  */
 @Composable
 private fun PlaybackProgressSection(
@@ -439,12 +444,16 @@ private fun PlaybackProgressSection(
 ) {
     val position by viewModel.position.collectAsState()
     val duration by viewModel.duration.collectAsState()
+    val isPlaying by viewModel.isPlaying.collectAsState()
+    val waveformData by viewModel.waveformData.collectAsState()
     val progress = if (duration > 0) position.toFloat() / duration.toFloat() else 0f
 
     Column(modifier = modifier) {
-        // Apple Music–style thin scrubber (drag shows thumb, commits on release)
-        AppleSlider(
+        // Waveform scrubber: played part = song's real waveform, unplayed = flat line
+        WaveformSlider(
+            waveformData = waveformData,
             progress = progress,
+            isPlaying = isPlaying,
             onSeek = { viewModel.seekTo(it) },
             modifier = Modifier.fillMaxWidth(),
         )
